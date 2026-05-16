@@ -96,6 +96,14 @@ async def stripe_webhook(
         logger.exception("webhook verify failed")
         raise HTTPException(400, f"Webhook signature verification failed: {e}")
 
+    et = event.get("type", "")
+
+    # Invoice events are persisted directly into the ``invoices`` table so
+    # the Billing tab can show a real history. stripe_adapter.handle_event
+    # only knows about subscription.* events; intercept here first.
+    if et in ("invoice.payment_succeeded", "invoice.payment_failed", "invoice.created"):
+        return _persist_stripe_invoice(et, event, db_billing)
+
     result = stripe_adapter.handle_event(event)
     if not result.get("handled"):
         return {"received": True, "ignored": result["event_type"]}
@@ -198,3 +206,69 @@ async def vnpay_return(request: Request):
     if sub:
         db_billing.update_subscription(sub["id"], status="active")
     return RedirectResponse(f"/?billing=success&ref={txn_ref}", status_code=302)
+
+
+@router.get("/invoices")
+async def list_invoices_route(user: dict = Depends(get_current_user)):
+    """Return the tenant's invoice history (newest first)."""
+    from .. import db_billing
+
+    return db_billing.list_invoices(user["tenant_id"])
+
+
+def _persist_stripe_invoice(event_type: str, event: dict, db_billing) -> dict:
+    """Insert / update an ``invoices`` row from a Stripe webhook payload.
+
+    Stripe redelivers webhooks aggressively; ``db_billing.create_invoice``
+    is upsert-by-(provider, provider_invoice_id) so this is safe to call
+    repeatedly. Returns the standard ``{received, ...}`` ack dict the
+    rest of the webhook handler returns.
+    """
+    inv = event.get("data", {}).get("object", {})
+    if not inv.get("id"):
+        return {"received": True, "ignored": event_type, "reason": "no_invoice_id"}
+
+    # Resolve tenant_id: prefer subscription metadata, fall back to looking
+    # up our local subscription row by Stripe customer id.
+    tenant_id: str | None = (
+        (inv.get("subscription_details") or {}).get("metadata", {}).get("tenant_id")
+    )
+    sub_external = inv.get("subscription")
+    sub_row = (
+        db_billing.get_subscription_by_provider_id(sub_external)
+        if sub_external
+        else None
+    )
+    if not tenant_id and sub_row:
+        tenant_id = sub_row.get("tenant_id")
+    if not tenant_id:
+        return {"received": True, "no_tenant": True, "event_type": event_type}
+
+    status_map = {
+        "invoice.payment_succeeded": "paid",
+        "invoice.payment_failed": "failed",
+        "invoice.created": inv.get("status", "open"),
+    }
+    transitions = inv.get("status_transitions") or {}
+    paid_ts = transitions.get("paid_at")
+
+    db_billing.create_invoice(
+        tenant_id=tenant_id,
+        subscription_id=sub_row["id"] if sub_row else None,
+        provider="stripe",
+        provider_invoice_id=inv["id"],
+        number=inv.get("number"),
+        amount_cents=inv.get("amount_due", inv.get("amount_paid", 0)) or 0,
+        currency=inv.get("currency", "usd"),
+        status=status_map.get(event_type, "open"),
+        hosted_invoice_url=inv.get("hosted_invoice_url"),
+        invoice_pdf_url=inv.get("invoice_pdf"),
+        period_start=datetime.fromtimestamp(inv["period_start"], tz=tz.utc)
+        if inv.get("period_start")
+        else None,
+        period_end=datetime.fromtimestamp(inv["period_end"], tz=tz.utc)
+        if inv.get("period_end")
+        else None,
+        paid_at=datetime.fromtimestamp(paid_ts, tz=tz.utc) if paid_ts else None,
+    )
+    return {"received": True, "handled": True, "event_type": event_type}

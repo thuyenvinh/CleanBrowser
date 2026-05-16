@@ -586,11 +586,83 @@ def get_tenant_usage(tenant_id: str) -> dict[str, Any]:
     return counter
 
 
+# ---------------------------------------------------------------------------
+# Invoices (Phase 5 closure — task NNN)
+# ---------------------------------------------------------------------------
+
+VALID_INVOICE_STATUSES = {"paid", "open", "void", "uncollectible", "failed", "draft"}
+
+
+def create_invoice(
+    *,
+    tenant_id: str,
+    subscription_id: str | None,
+    provider: str,
+    provider_invoice_id: str,
+    amount_cents: int,
+    currency: str = "usd",
+    status: str = "open",
+    number: str | None = None,
+    hosted_invoice_url: str | None = None,
+    invoice_pdf_url: str | None = None,
+    period_start: datetime.datetime | None = None,
+    period_end: datetime.datetime | None = None,
+    paid_at: datetime.datetime | None = None,
+) -> dict[str, Any]:
+    """Idempotent upsert by ``(provider, provider_invoice_id)``.
+
+    Stripe webhooks redeliver freely; this keeps the row count honest
+    while still picking up later status transitions (open → paid).
+    """
+    if status not in VALID_INVOICE_STATUSES:
+        raise ValueError(f"invalid invoice status: {status!r}")
+    inv_id = str(uuid.uuid4())
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """
+                INSERT INTO invoices
+                    (id, tenant_id, subscription_id, provider, provider_invoice_id,
+                     number, amount_cents, currency, status,
+                     hosted_invoice_url, invoice_pdf_url,
+                     period_start, period_end, paid_at)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
+                ON CONFLICT (provider, provider_invoice_id) DO UPDATE SET
+                    status = EXCLUDED.status,
+                    paid_at = COALESCE(EXCLUDED.paid_at, invoices.paid_at),
+                    hosted_invoice_url = COALESCE(EXCLUDED.hosted_invoice_url, invoices.hosted_invoice_url),
+                    invoice_pdf_url = COALESCE(EXCLUDED.invoice_pdf_url, invoices.invoice_pdf_url),
+                    number = COALESCE(EXCLUDED.number, invoices.number)
+                RETURNING *
+                """,
+                (
+                    inv_id, tenant_id, subscription_id, provider, provider_invoice_id,
+                    number, amount_cents, currency, status,
+                    hosted_invoice_url, invoice_pdf_url,
+                    period_start, period_end, paid_at,
+                ),
+            )
+            return _row_to_dict(cur.fetchone())
+
+
+def list_invoices(tenant_id: str, limit: int = 100) -> list[dict[str, Any]]:
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM invoices WHERE tenant_id = %s "
+                "ORDER BY created_at DESC LIMIT %s",
+                (tenant_id, limit),
+            )
+            return [_row_to_dict(r) for r in cur.fetchall() or []]
+
+
 __all__ = [
     "ACTIVE_SUBSCRIPTION_STATUSES",
+    "VALID_INVOICE_STATUSES",
     "VALID_PAYMENT_PROVIDERS",
     "VALID_SUBSCRIPTION_STATUSES",
     "cancel_subscription",
+    "create_invoice",
     "create_subscription",
     "get_active_subscription",
     "get_or_create_current_period",
@@ -599,6 +671,7 @@ __all__ = [
     "get_tenant_limits",
     "get_tenant_usage",
     "increment_counter",
+    "list_invoices",
     "list_plans",
     "set_counter",
     "update_peak",

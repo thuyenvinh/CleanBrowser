@@ -688,3 +688,28 @@ class TenantQuotaResponse(BaseModel):
     subscription: Subscription | None = None
     usage: UsageCounter
     at_limit: dict[str, bool]
+
+
+class Invoice(BaseModel):
+    """One payment-provider invoice stored under ``invoices``.
+
+    Phase 5 closure — populated by the Stripe webhook (invoice.*) and
+    surfaced in the Billing tab so a tenant can audit charges + grab
+    the provider's PDF.
+    """
+
+    id: str
+    tenant_id: str
+    subscription_id: str | None = None
+    provider: str
+    provider_invoice_id: str
+    number: str | None = None
+    amount_cents: int
+    currency: str
+    status: str
+    hosted_invoice_url: str | None = None
+    invoice_pdf_url: str | None = None
+    period_start: datetime | None = None
+    period_end: datetime | None = None
+    paid_at: datetime | None = None
+    created_at: datetime

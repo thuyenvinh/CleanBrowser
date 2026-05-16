@@ -1,5 +1,6 @@
 import { CreditCard, ExternalLink, Check } from "lucide-react";
 import { useBilling } from "../hooks/useBilling";
+import { InvoiceList } from "./InvoiceList";
 
 function formatPrice(cents: number, interval: string): string {
   if (cents === 0) return "Free";
@@ -28,7 +29,7 @@ function UsageBar({ label, used, max }: { label: string; used: number; max: numb
 }
 
 export function BillingPage() {
-  const { status, plans, loading, error, upgrade, managePortal, refresh } = useBilling();
+  const { status, plans, invoices, loading, error, upgrade, managePortal, refresh } = useBilling();
 
   if (loading) {
     return <div className="p-8 text-center text-gray-500 text-sm">Loading billing...</div>;
@@ -103,6 +104,12 @@ export function BillingPage() {
             );
           })}
         </div>
+      </section>
+
+      {/* Invoices */}
+      <section>
+        <h3 className="text-sm font-semibold mb-3">Invoices</h3>
+        <InvoiceList invoices={invoices} />
       </section>
     </div>
   );

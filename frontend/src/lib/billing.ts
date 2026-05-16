@@ -54,6 +54,24 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return text ? JSON.parse(text) : (undefined as T);
 }
 
+export interface Invoice {
+  id: string;
+  tenant_id: string;
+  subscription_id: string | null;
+  provider: string;
+  provider_invoice_id: string;
+  number: string | null;
+  amount_cents: number;
+  currency: string;
+  status: string;
+  hosted_invoice_url: string | null;
+  invoice_pdf_url: string | null;
+  period_start: string | null;
+  period_end: string | null;
+  paid_at: string | null;
+  created_at: string;
+}
+
 export const billing = {
   listPlans: () => request<Plan[]>("/api/billing/plans"),
   getSubscription: () => request<SubscriptionStatus>("/api/billing/subscription"),
@@ -63,4 +81,5 @@ export const billing = {
       body: JSON.stringify({ plan_id: planId }),
     }),
   openPortal: () => request<{url: string}>("/api/billing/portal", { method: "POST" }),
+  listInvoices: () => request<Invoice[]>("/api/billing/invoices"),
 };
