@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Literal
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, EmailStr, Field, field_validator
 
 
 class ProfileCreate(BaseModel):
@@ -132,3 +132,79 @@ class ClipboardRequest(BaseModel):
 
 class LoginRequest(BaseModel):
     token: str
+
+
+# ---------------------------------------------------------------------------
+# Phase 1 auth/RBAC models.
+#
+# These describe the multi-tenant data shape defined in
+# ``docs/ARCHITECTURE`` §2.2 / §2.3 and surface rows produced by
+# ``backend/db_auth.py``. They are intentionally not yet wired into any router;
+# the API layer will adopt them in Wave 2 (which is also when the legacy
+# token-based ``LoginRequest`` above is expected to be retired in favour of
+# ``EmailLoginRequest`` below).
+# ---------------------------------------------------------------------------
+
+
+class Tenant(BaseModel):
+    id: str
+    name: str
+    plan_id: str = "free"
+    status: str = "active"
+    created_at: str
+
+
+class UserPublic(BaseModel):
+    """A user row safe to serialise to clients — never includes ``password_hash``."""
+
+    id: str
+    tenant_id: str
+    email: EmailStr
+    status: str = "active"
+    created_at: str
+
+
+class Workspace(BaseModel):
+    id: str
+    tenant_id: str
+    name: str
+    owner_user_id: str
+    created_at: str
+
+
+class WorkspaceMember(BaseModel):
+    workspace_id: str
+    user_id: str
+    role: Literal["owner", "admin", "editor", "launcher", "viewer"]
+
+
+class SignupRequest(BaseModel):
+    email: EmailStr
+    password: str = Field(min_length=8)
+    tenant_name: str | None = None
+
+
+class EmailLoginRequest(BaseModel):
+    """Email + password login payload.
+
+    Named distinctly from the legacy token-based ``LoginRequest`` so that both
+    can coexist while Wave 2 migrates the auth router.
+    """
+
+    email: EmailStr
+    password: str
+
+
+class ApiKeyCreate(BaseModel):
+    name: str
+    scopes: list[str] | None = None
+
+
+class ApiKeyPublic(BaseModel):
+    """API key row safe to serialise to clients — never includes ``key_hash``."""
+
+    id: str
+    name: str
+    scopes: list[str]
+    last_used_at: str | None = None
+    created_at: str
