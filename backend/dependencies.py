@@ -186,6 +186,55 @@ def _resolve_workspace_id(request: Request) -> str | None:
     return request.query_params.get("workspace_id")
 
 
+# Role hierarchy for RBAC (Phase 1, task O). Numbers ascend with privilege:
+# viewer (1) < launcher (2) < editor (3) < admin (4) < owner (5).
+ROLE_LEVEL: dict[str, int] = {
+    "viewer": 1,
+    "launcher": 2,
+    "editor": 3,
+    "admin": 4,
+    "owner": 5,
+}
+
+
+def check_role_for_workspace(
+    user: dict[str, Any] | None,
+    workspace_id: str | None,
+    min_level: int,
+) -> str | None:
+    """Assert ``user`` has at least ``min_level`` permission in ``workspace_id``.
+
+    Returns the user's role string on success. Behaviour:
+
+    * ``user is None``  → returns ``None`` (legacy / unauthenticated bypass —
+      callers that already gated their workspace check on the caller having a
+      session will simply skip the role check too).
+    * ``workspace_id is None`` → 404 (orphan profile, hidden from authenticated
+      users to avoid leaking existence across tenants).
+    * No membership → 404 (same leakage concern).
+    * Role present but below ``min_level`` → 403 "insufficient role".
+    """
+    if user is None:
+        return None
+    if not workspace_id:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    try:
+        role = db_auth.get_member_role(workspace_id, user["id"])
+    except Exception:
+        logger.exception(
+            "check_role_for_workspace: get_member_role failed (ws=%s user=%s)",
+            workspace_id,
+            user.get("id"),
+        )
+        raise HTTPException(status_code=500, detail="role lookup failed")
+    if role is None:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    level = ROLE_LEVEL.get(role, 0)
+    if level < min_level:
+        raise HTTPException(status_code=403, detail="insufficient role")
+    return role
+
+
 def require_role(*allowed: str) -> Callable[..., dict[str, Any]]:
     """Build a dependency that asserts the current user has one of ``allowed``.
 

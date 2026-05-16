@@ -26,7 +26,12 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import database as db
 from .. import db_auth
-from ..dependencies import browser_mgr, get_optional_user
+from ..dependencies import (
+    ROLE_LEVEL,
+    browser_mgr,
+    check_role_for_workspace,
+    get_optional_user,
+)
 from ..models import (
     LaunchResponse,
     ProfileCreate,
@@ -111,6 +116,23 @@ def _load_and_authorize(
     return profile
 
 
+def _load_and_check(
+    profile_id: str,
+    user: dict[str, Any] | None,
+    min_level: int,
+) -> dict[str, Any]:
+    """Load a profile, enforce workspace scoping, then enforce role level.
+
+    Thin wrapper around :func:`_load_and_authorize` +
+    :func:`check_role_for_workspace`. Legacy / unauthenticated callers
+    (``user is None``) still bypass the role check, matching the rest of the
+    multi-tenant layering in this router.
+    """
+    profile = _load_and_authorize(profile_id, user)
+    check_role_for_workspace(user, profile.get("workspace_id"), min_level)
+    return profile
+
+
 def _decorate_with_runtime(profile: dict[str, Any]) -> dict[str, Any]:
     """Attach the live status / vnc / cdp fields onto a profile dict."""
     status = browser_mgr.get_status(profile["id"])
@@ -119,6 +141,12 @@ def _decorate_with_runtime(profile: dict[str, Any]) -> dict[str, Any]:
     profile["cdp_url"] = status["cdp_url"]
     profile["tags"] = [TagResponse(**t) for t in profile.get("tags", [])]
     return profile
+
+
+# TODO(Phase O): role enforcement for CDP HTTP/WS routes (``routers/cdp.py``)
+# and the VNC WebSocket (``routers/vnc.py``). Wiring is out of scope here per
+# the task's "only touch profiles.py + dependencies.py" constraint — those
+# routers still rely on ``_load_and_authorize`` semantics.
 
 
 # ── CRUD ─────────────────────────────────────────────────────────────────────
@@ -149,7 +177,10 @@ async def create_profile(
         data["tags"] = []
 
     if user is not None:
-        data["workspace_id"] = _resolve_create_workspace_id(request, user)
+        target_ws = _resolve_create_workspace_id(request, user)
+        # Require editor+ in the target workspace to create profiles.
+        check_role_for_workspace(user, target_ws, ROLE_LEVEL["editor"])
+        data["workspace_id"] = target_ws
     # else: leave workspace_id unset → create_profile defaults to NULL.
 
     profile = db.create_profile(**data)
@@ -161,7 +192,7 @@ async def get_profile(
     profile_id: str,
     user: dict[str, Any] | None = Depends(get_optional_user),
 ):
-    profile = _load_and_authorize(profile_id, user)
+    profile = _load_and_check(profile_id, user, ROLE_LEVEL["viewer"])
     return ProfileResponse(**_decorate_with_runtime(profile))
 
 
@@ -173,7 +204,7 @@ async def update_profile(
 ):
     # Authorize first so we don't leak existence by failing on a different
     # error path further down for cross-workspace ids.
-    _load_and_authorize(profile_id, user)
+    _load_and_check(profile_id, user, ROLE_LEVEL["editor"])
 
     # Only pass fields that were explicitly set
     data = req.model_dump(exclude_unset=True)
@@ -197,7 +228,7 @@ async def delete_profile(
     if profile_id in browser_mgr.running:
         await browser_mgr.stop(profile_id)
 
-    profile = _load_and_authorize(profile_id, user)
+    profile = _load_and_check(profile_id, user, ROLE_LEVEL["editor"])
 
     user_data_dir = Path(profile["user_data_dir"])
 
@@ -219,7 +250,7 @@ async def launch_profile(
     profile_id: str,
     user: dict[str, Any] | None = Depends(get_optional_user),
 ):
-    profile = _load_and_authorize(profile_id, user)
+    profile = _load_and_check(profile_id, user, ROLE_LEVEL["launcher"])
     if profile_id in browser_mgr.running:
         raise HTTPException(status_code=409, detail="Profile is already running")
 
@@ -253,7 +284,7 @@ async def stop_profile(
     if profile_id not in browser_mgr.running:
         raise HTTPException(status_code=404, detail="Profile is not running")
     if user is not None:
-        _load_and_authorize(profile_id, user)
+        _load_and_check(profile_id, user, ROLE_LEVEL["launcher"])
     await browser_mgr.stop(profile_id)
     return {"ok": True}
 
@@ -263,6 +294,6 @@ async def get_profile_status(
     profile_id: str,
     user: dict[str, Any] | None = Depends(get_optional_user),
 ):
-    _load_and_authorize(profile_id, user)
+    _load_and_check(profile_id, user, ROLE_LEVEL["viewer"])
     status = browser_mgr.get_status(profile_id)
     return ProfileStatusResponse(**status)
