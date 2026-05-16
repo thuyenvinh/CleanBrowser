@@ -39,6 +39,7 @@ from typing import Any
 from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from .. import db_auth
+from .. import quota as _quota
 from ..dependencies import get_current_user
 from ..models import (
     InviteMemberRequest,
@@ -198,6 +199,10 @@ async def invite_member(
     """
     _check_member_role(workspace_id, user, _MEMBER_MUTATION_ROLES)
 
+    # Quota gate: 402 before we even resolve the target email if the tenant
+    # has hit its workspace-members cap.
+    _quota.check_quota(user["tenant_id"], "invite_member").raise_if_exceeded()
+
     target = db_auth.get_user_by_email_in_tenant(user["tenant_id"], body.email)
     if target is None:
         raise HTTPException(
@@ -223,6 +228,8 @@ async def invite_member(
             target["id"],
         )
         raise HTTPException(status_code=500, detail="failed to add member")
+
+    _quota.record_usage(user["tenant_id"], "invite_member")
 
     return {
         "user_id": target["id"],

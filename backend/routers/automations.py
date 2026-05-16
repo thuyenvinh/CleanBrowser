@@ -45,6 +45,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Request, Response
 from pydantic import BaseModel, Field
 
 from .. import db_auth
+from .. import quota as _quota
 from ..dependencies import (
     ROLE_LEVEL,
     browser_mgr,
@@ -471,6 +472,12 @@ async def trigger_run(
         automation_id, user, ROLE_LEVEL["launcher"]
     )
 
+    # Quota gate: 402 before we queue if the tenant has burned through
+    # their automation-minutes budget. Phase 5 records a flat 1 minute
+    # per trigger; a later wave will switch to precise elapsed-time
+    # metering when the run finishes.
+    _quota.check_quota(user["tenant_id"], "run_automation").raise_if_exceeded()
+
     # Cross-workspace profile guard. We deliberately use the local
     # `database` module rather than db_automation so this works the
     # moment a profile row exists, independent of CC's branch state.
@@ -521,6 +528,12 @@ async def trigger_run(
     # task handle: Python keeps a strong ref via the running event loop,
     # and the function catches every exception itself.
     asyncio.create_task(_execute_run_async(run_id, version, profile_id))
+
+    # Record 1 minute against the automation-minutes counter at trigger
+    # time. Real metering (precise elapsed time at run completion) is
+    # tracked as a follow-up wave; this gives accounting *some* signal
+    # so plan limits aren't trivially bypassed by long-running queues.
+    _quota.record_usage(user["tenant_id"], "run_automation", delta=1)
 
     return AutomationRunQueued(run_id=run_id, status=run.get("status", "queued"))
 

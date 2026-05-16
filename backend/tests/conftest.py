@@ -176,6 +176,68 @@ def sample_profile(tmp_db: Path):
     return db.create_profile(name="Test Profile", fingerprint_seed=12345)
 
 
+# ---------------------------------------------------------------------------
+# Quota bypass (Wave 13 — Task LLL).
+#
+# The routers in this app started consulting ``backend.quota`` for
+# ``create_profile`` / ``launch_profile`` / ``invite_member`` /
+# ``run_automation`` in this wave. Quota in turn reads
+# ``db_billing.get_tenant_limits`` which, in the absence of an active
+# subscription row, falls back to the **free** plan with tight per-tenant
+# caps. The existing test suite was written long before billing existed and
+# happily creates dozens of profiles per test under the SYSTEM_TENANT_ID —
+# enforcing the free-plan ceiling there would break every router test.
+#
+# Rather than wire a fake subscription per test, we monkey-patch
+# ``db_billing`` to return unlimited limits, empty usage, and no-op
+# recorders for the duration of each test. Tests that *want* to assert
+# quota behaviour can override with their own ``monkeypatch.setattr`` on
+# the same names — pytest applies the inner monkeypatch on top of ours.
+# ---------------------------------------------------------------------------
+
+
+@pytest.fixture(autouse=True)
+def _unlimited_quota_for_tests(monkeypatch):
+    """Bypass plan limits in tests so legacy router fixtures keep passing."""
+    unlimited_limits = {
+        "max_profiles": None,
+        "max_concurrent_runs": None,
+        "max_workspace_members": None,
+        "max_automation_minutes": None,
+        "max_storage_gb": None,
+        "allow_regions": ["local"],
+    }
+    empty_usage = {
+        "profile_count": 0,
+        "concurrent_runs_peak": 0,
+        "automation_minutes_used": 0,
+        "workspace_members_count": 0,
+        "storage_gb_used": 0,
+    }
+    try:
+        from backend import db_billing
+    except ImportError:  # billing module not on disk → nothing to patch.
+        return
+    monkeypatch.setattr(
+        db_billing, "get_tenant_limits", lambda _tid: unlimited_limits, raising=False
+    )
+    monkeypatch.setattr(
+        db_billing, "get_tenant_usage", lambda _tid: empty_usage, raising=False
+    )
+    # record_usage delegates into these three; making them no-ops keeps the
+    # success path from touching ``billing_periods`` / ``usage_counters``
+    # which the test schema does have but which we don't want to clutter.
+    monkeypatch.setattr(
+        db_billing, "increment_counter", lambda *a, **kw: None, raising=False
+    )
+    monkeypatch.setattr(
+        db_billing, "set_counter", lambda *a, **kw: None, raising=False
+    )
+    monkeypatch.setattr(
+        db_billing, "update_peak", lambda *a, **kw: None, raising=False
+    )
+
+
 @pytest.fixture()
 def app_client(tmp_db: Path, monkeypatch: pytest.MonkeyPatch):
     """FastAPI TestClient with mocked DB and browser manager."""

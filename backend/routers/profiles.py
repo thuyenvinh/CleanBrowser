@@ -28,6 +28,7 @@ from .. import database as db
 from .. import db_auth
 from .. import db_proxy
 from .. import db_versions
+from .. import quota as _quota
 from ..dependencies import (
     ROLE_LEVEL,
     browser_mgr,
@@ -220,6 +221,8 @@ async def create_profile(
         # Require editor+ in the target workspace to create profiles.
         check_role_for_workspace(user, target_ws, ROLE_LEVEL["editor"])
         data["workspace_id"] = target_ws
+        # Quota gate: 402 before any DB write if the plan limit is hit.
+        _quota.check_quota(user["tenant_id"], "create_profile").raise_if_exceeded()
     # else: leave workspace_id unset → create_profile defaults to NULL.
 
     # If the caller is binding a proxy, validate workspace membership before
@@ -229,6 +232,8 @@ async def create_profile(
     )
 
     profile = db.create_profile(**data)
+    if user is not None:
+        _quota.record_usage(user["tenant_id"], "create_profile")
     return ProfileResponse(**_decorate_with_runtime(profile))
 
 
@@ -309,6 +314,12 @@ async def launch_profile(
     if profile_id in browser_mgr.running:
         raise HTTPException(status_code=409, detail="Profile is already running")
 
+    # Quota gate: 402 before spinning up an Xvnc/browser if the tenant has
+    # reached its concurrent-runs cap. Only applies to authenticated
+    # sessions — legacy AUTH_TOKEN callers have no tenant context.
+    if user is not None:
+        _quota.check_quota(user["tenant_id"], "launch_profile").raise_if_exceeded()
+
     try:
         running = await browser_mgr.launch(profile)
     except ValueError as exc:
@@ -316,6 +327,9 @@ async def launch_profile(
     except Exception as exc:
         logger.error("Failed to launch profile %s: %s", profile_id, exc)
         raise HTTPException(status_code=500, detail="Failed to launch browser")
+
+    if user is not None:
+        _quota.record_usage(user["tenant_id"], "launch_profile")
 
     return LaunchResponse(
         profile_id=profile_id,
