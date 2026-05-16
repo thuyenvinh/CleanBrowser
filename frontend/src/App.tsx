@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { Lock, PanelLeftClose, PanelLeft, Server, Globe, Workflow } from "lucide-react";
+import { Lock, PanelLeftClose, PanelLeft, Server, Globe, Workflow, CreditCard } from "lucide-react";
 import { useProfiles } from "./hooks/useProfiles";
 import { useAuth } from "./hooks/useAuth";
 import { api, setOnUnauthorized, type ProfileCreateData } from "./lib/api";
@@ -13,12 +13,13 @@ import { SignupPage } from "./components/SignupPage";
 import { WorkspaceSelector } from "./components/WorkspaceSelector";
 import { ProxyPage } from "./components/ProxyPage";
 import { AutomationPage } from "./components/AutomationPage";
+import { BillingPage } from "./components/BillingPage";
 import { EmailVerificationBanner } from "./components/EmailVerificationBanner";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
 type AuthView = "login" | "signup";
-type Tab = "profiles" | "proxies" | "automations";
+type Tab = "profiles" | "proxies" | "automations" | "billing";
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>("checking");
@@ -270,6 +271,14 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
                 <Workflow className="h-3.5 w-3.5" />
                 Automations
               </button>
+              <button
+                onClick={() => setTab("billing")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "billing" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Billing"
+              >
+                <CreditCard className="h-3.5 w-3.5" />
+                Billing
+              </button>
             </div>
             {tab === "profiles" && selected && (
               <LaunchButton
@@ -310,6 +319,7 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
           {tab === "automations" && (
             <AutomationPage currentWorkspaceId={currentWorkspaceId} />
           )}
+          {tab === "billing" && <BillingPage />}
           {tab === "profiles" && view === "empty" && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
