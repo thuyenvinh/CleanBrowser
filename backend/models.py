@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import date, datetime
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -614,3 +614,77 @@ class Region(BaseModel):
 class RegionList(BaseModel):
     regions: list[Region]
     default: str
+
+
+# ---------------------------------------------------------------------------
+# Phase 5 wave 1 (task HHH) — billing & metering models.
+#
+# Backs the plan catalogue (``GET /api/plans``), the tenant subscription
+# view, and the quota dashboard described in ``docs/ARCHITECTURE`` §2.8.
+# The actual REST surface and Stripe/VNPay wiring land in later Phase 5
+# waves; these schemas are introduced now alongside
+# :mod:`backend.db_billing` so router code can import the types directly
+# without reaching into the DB layer for shape.
+#
+# ``None`` on any ``max_*`` field means "unlimited" — same convention as
+# the underlying ``plans`` table columns.
+# ---------------------------------------------------------------------------
+
+
+class Plan(BaseModel):
+    id: str
+    name: str
+    description: str | None = None
+    price_cents: int
+    interval: str
+    max_profiles: int | None = None
+    max_concurrent_runs: int | None = None
+    max_workspace_members: int | None = None
+    max_automation_minutes: int | None = None
+    max_storage_gb: int | None = None
+    allow_regions: list[str]
+    is_public: bool
+    sort_order: int
+
+
+class Subscription(BaseModel):
+    id: str
+    tenant_id: str
+    plan_id: str
+    status: str
+    payment_provider: str | None = None
+    provider_subscription_id: str | None = None
+    current_period_start: datetime | None = None
+    current_period_end: datetime | None = None
+    cancel_at_period_end: bool
+    trial_end: datetime | None = None
+    created_at: datetime
+
+
+class UsageCounter(BaseModel):
+    id: str
+    tenant_id: str
+    period_start: date
+    period_end: date
+    profile_count: int
+    concurrent_runs_peak: int
+    automation_minutes_used: int
+    storage_gb_used: float
+    workspace_members_count: int
+    updated_at: datetime
+
+
+class TenantQuotaResponse(BaseModel):
+    """Composite payload for the per-tenant quota dashboard endpoint.
+
+    ``at_limit`` is a flat ``{resource: bool}`` map computed by the
+    quota helper so the frontend can render badge / lock-out UI without
+    re-deriving the comparison client-side. Keys are stable resource
+    slugs (e.g. ``'profiles'``, ``'concurrent_runs'``,
+    ``'automation_minutes'``, ``'workspace_members'``, ``'storage_gb'``).
+    """
+
+    plan: Plan
+    subscription: Subscription | None = None
+    usage: UsageCounter
+    at_limit: dict[str, bool]
