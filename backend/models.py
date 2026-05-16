@@ -288,3 +288,64 @@ class AuditLog(BaseModel):
     status: str
     payload: dict | None
     ts: datetime
+
+
+# ---------------------------------------------------------------------------
+# Phase 2 proxy pool models.
+#
+# Surface for the workspace-level proxy pool from
+# ``docs/ARCHITECTURE`` §2.5; rows produced by :mod:`backend.db_proxy`. As
+# with the auth models above, these are intentionally not yet wired into
+# any router — the proxy CRUD routes / browser_manager adoption land in a
+# later Phase 2 task. ``password_enc`` is deliberately absent from
+# :class:`Proxy` so it can never be serialised to clients.
+# ---------------------------------------------------------------------------
+
+
+ProxyType = Literal["http", "https", "socks5"]
+ProxyStatus = Literal["ok", "fail", "unchecked"]
+
+
+class Proxy(BaseModel):
+    """A proxy row safe to serialise to clients — never includes credentials."""
+
+    id: str
+    workspace_id: str
+    name: str
+    type: ProxyType
+    host: str
+    port: int
+    username: str | None = None
+    provider: str | None = None
+    rotation_url: str | None = None
+    sticky_session: str | None = None
+    country_code: str | None = None
+    status: ProxyStatus = "unchecked"
+    latency_ms: int | None = None
+    last_check_at: datetime | None = None
+    last_error: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class ProxyCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    type: ProxyType
+    host: str = Field(min_length=1)
+    port: int = Field(ge=1, le=65535)
+    username: str | None = None
+    password: str | None = None  # plaintext IN; encrypted before persistence
+    provider: str = "manual"
+    rotation_url: str | None = None
+    sticky_session: str | None = None
+
+
+class ProxyUpdate(BaseModel):
+    name: str | None = None
+    host: str | None = None
+    port: int | None = Field(default=None, ge=1, le=65535)
+    username: str | None = None
+    password: str | None = None  # plaintext IN; encrypted before persistence
+    rotation_url: str | None = None
+    sticky_session: str | None = None
+    country_code: str | None = None
