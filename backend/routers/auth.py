@@ -432,3 +432,210 @@ async def resend_verification(
     )
     sent = email_sender.send_verification_email(user["email"], verify_url)
     return ResendVerificationResponse(sent=sent)
+
+
+# ---------------------------------------------------------------------------
+# OAuth login (Phase 1 task WW — Google + GitHub)
+#
+# Three endpoints implement the classic Authorization Code dance:
+#
+#   GET /oauth/{provider}/start
+#       Mints an anti-CSRF ``state`` token, stashes it in a short-lived
+#       httpOnly cookie, and 302-redirects the user-agent to the IdP's
+#       consent screen with our ``redirect_uri`` baked in.
+#
+#   GET /oauth/{provider}/callback
+#       The IdP redirects the user-agent here with ``code`` + ``state``.
+#       We compare ``state`` against the cookie (CSRF defence — without it
+#       an attacker could trick a logged-in victim into binding the
+#       attacker's IdP identity to the victim's app account), exchange the
+#       code for an access token, fetch the user profile, and resolve the
+#       OAuth identity to a local user:
+#         * existing OAuth link  → log in
+#         * email already taken  → link OAuth + log in
+#         * fresh email          → signup_oauth + log in
+#       Then issue the same JWT session cookie ``/login`` does and 302
+#       back to the SPA root.
+#
+#   GET /oauth/providers
+#       Tells the SPA which providers are configured so it can hide the
+#       buttons that would fail at ``/start``.
+#
+# Why no PKCE: both endpoints we redirect to (``/start``, ``/callback``)
+# are server-side and confidential — the client secret is enough. PKCE
+# only becomes essential when a public client (SPA/mobile) holds the code
+# verifier, which is not this Phase 1 flow.
+# ---------------------------------------------------------------------------
+
+
+_OAUTH_STATE_COOKIE = "cb_oauth_state"
+_OAUTH_STATE_TTL_SECONDS = 600  # 10 minutes — covers slow IdP screens.
+
+
+def _set_oauth_state_cookie(response: Response, state: str) -> None:
+    response.set_cookie(
+        key=_OAUTH_STATE_COOKIE,
+        value=state,
+        max_age=_OAUTH_STATE_TTL_SECONDS,
+        httponly=True,
+        # ``lax`` is required because the IdP performs a top-level GET
+        # redirect back to us — a ``strict`` cookie would not be sent on
+        # that cross-site navigation and the state check would always fail.
+        samesite="lax",
+        secure=_cookie_secure(),
+        path="/",
+    )
+
+
+def _clear_oauth_state_cookie(response: Response) -> None:
+    response.delete_cookie(
+        key=_OAUTH_STATE_COOKIE,
+        path="/",
+        samesite="lax",
+        secure=_cookie_secure(),
+    )
+
+
+@router.get("/oauth/providers")
+async def oauth_providers_status():
+    """Report which OAuth providers are configured for this deployment."""
+    from .. import oauth as oauth_module
+    from ..models import OAuthProvidersStatus
+
+    return OAuthProvidersStatus(
+        google=oauth_module.is_configured("google"),
+        github=oauth_module.is_configured("github"),
+    ).model_dump()
+
+
+@router.get("/oauth/{provider}/start")
+async def oauth_start(provider: str, request: Request):
+    """Redirect the user-agent to the IdP's consent screen.
+
+    503 if the provider is recognised but not configured (env vars unset)
+    so the SPA can surface a clearer message than the bare 404 from an
+    unknown provider name.
+    """
+    import secrets as _secrets
+
+    from fastapi.responses import RedirectResponse
+
+    from .. import oauth as oauth_module
+
+    try:
+        prov = oauth_module.get_provider(provider)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+    if not oauth_module.is_configured(provider):
+        raise HTTPException(
+            status_code=503,
+            detail=f"OAuth provider {provider} not configured",
+        )
+    state = _secrets.token_urlsafe(32)
+    redirect_uri = str(request.url_for("oauth_callback", provider=provider))
+    authorize_url = prov.authorize_redirect(state, redirect_uri)
+    resp = RedirectResponse(authorize_url, status_code=302)
+    _set_oauth_state_cookie(resp, state)
+    return resp
+
+
+@router.get("/oauth/{provider}/callback", name="oauth_callback")
+async def oauth_callback(
+    provider: str, code: str, state: str, request: Request
+):
+    """Finish the OAuth dance: validate state, swap code, resolve user, log in."""
+    from fastapi.responses import RedirectResponse
+
+    from .. import oauth as oauth_module
+    from ..auth_tokens import encode_session
+
+    # ── 1. CSRF defence ────────────────────────────────────────────────────
+    cookie_state = request.cookies.get(_OAUTH_STATE_COOKIE)
+    if not cookie_state or not hmac.compare_digest(cookie_state, state):
+        raise HTTPException(status_code=400, detail="Invalid OAuth state")
+
+    # ── 2. Resolve provider config ─────────────────────────────────────────
+    try:
+        prov = oauth_module.get_provider(provider)
+    except ValueError:
+        raise HTTPException(status_code=404, detail=f"Unknown provider: {provider}")
+    if not oauth_module.is_configured(provider):
+        raise HTTPException(
+            status_code=503,
+            detail=f"OAuth provider {provider} not configured",
+        )
+
+    # ── 3. Code → access token → userinfo ──────────────────────────────────
+    redirect_uri = str(request.url_for("oauth_callback", provider=provider))
+    try:
+        token_data = await prov.exchange_code(code, redirect_uri)
+    except Exception:
+        logger.exception("OAuth code exchange failed for provider=%s", provider)
+        raise HTTPException(status_code=502, detail="OAuth token exchange failed")
+    access_token = token_data.get("access_token")
+    if not access_token:
+        # GitHub returns 200 with {"error": "..."} for some failure modes —
+        # treat absence of the token as the canonical failure signal.
+        raise HTTPException(status_code=400, detail="Failed to obtain access token")
+    try:
+        userinfo = await prov.fetch_userinfo(access_token)
+    except Exception:
+        logger.exception("OAuth userinfo fetch failed for provider=%s", provider)
+        raise HTTPException(status_code=502, detail="OAuth userinfo fetch failed")
+
+    try:
+        norm = oauth_module.normalize_userinfo(provider, userinfo)
+    except (KeyError, ValueError):
+        logger.exception(
+            "OAuth userinfo normalisation failed for provider=%s payload=%r",
+            provider,
+            userinfo,
+        )
+        raise HTTPException(status_code=502, detail="Malformed OAuth userinfo")
+
+    # ── 4. Resolve to a local user ─────────────────────────────────────────
+    # Order matters: OAuth-link lookup first so a user who linked then changed
+    # their email at the IdP still resolves to their original account.
+    user = db_auth.get_user_by_oauth(provider, norm["provider_user_id"])
+    if user is None:
+        existing = db_auth.get_user_by_email(norm["email"])
+        if existing is not None:
+            db_auth.link_oauth(
+                existing["id"], provider, norm["provider_user_id"]
+            )
+            user = db_auth.get_user(existing["id"]) or existing
+        else:
+            try:
+                _, user, _ = db_auth.signup_oauth(
+                    provider=provider,
+                    provider_user_id=norm["provider_user_id"],
+                    email=norm["email"],
+                    name=norm.get("name"),
+                )
+            except Exception:
+                logger.exception(
+                    "OAuth signup failed for provider=%s email=%s",
+                    provider,
+                    norm["email"],
+                )
+                raise HTTPException(status_code=500, detail="OAuth signup failed")
+
+    if user.get("status") != "active":
+        # Deactivated user trying to OAuth back in — same response as the
+        # password path, no information leak.
+        raise HTTPException(status_code=401, detail="invalid credentials")
+
+    # ── 5. Issue session + bounce back to the SPA ──────────────────────────
+    session_jwt = encode_session(user["id"], user["tenant_id"])
+    resp = RedirectResponse("/", status_code=302)
+    resp.set_cookie(
+        key=SESSION_COOKIE,
+        value=session_jwt,
+        max_age=JWT_LIFETIME_SECONDS,
+        httponly=True,
+        samesite="lax",
+        secure=_cookie_secure(),
+        path="/",
+    )
+    _clear_oauth_state_cookie(resp)
+    return resp

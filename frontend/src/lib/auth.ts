@@ -135,3 +135,32 @@ export const verification = {
       method: "POST",
     }),
 };
+
+/**
+ * OAuth (social login) client helpers.
+ *
+ * The full OAuth dance is server-driven — the frontend's only jobs are to
+ *   1. discover which providers are configured (so we can hide buttons that
+ *      would otherwise 503 at /start), and
+ *   2. navigate the top-level window to /api/auth/oauth/{provider}/start.
+ *      We deliberately use ``window.location.href`` rather than ``fetch``
+ *      because the IdP redirect chain needs to drive the user-agent itself
+ *      (and have access to cross-site cookies on the way back) — fetching
+ *      ``/start`` from JavaScript would leave the response 302 stranded.
+ */
+export type OAuthProviderName = "google" | "github";
+
+export interface OAuthProvidersStatus {
+  google: boolean;
+  github: boolean;
+}
+
+export const oauth = {
+  /** GET /api/auth/oauth/providers → { google, github } */
+  getProvidersStatus: () =>
+    authRequest<OAuthProvidersStatus>("/api/auth/oauth/providers"),
+
+  /** Build the URL the browser should navigate to for the auth-code flow. */
+  startUrl: (provider: OAuthProviderName) =>
+    `/api/auth/oauth/${provider}/start`,
+};

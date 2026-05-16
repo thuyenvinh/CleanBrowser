@@ -1,7 +1,14 @@
-import { useState, type FormEvent } from "react";
-import { Lock } from "lucide-react";
+import { useEffect, useState, type FormEvent } from "react";
+import { Chrome, Github, Lock } from "lucide-react";
 import { api } from "../lib/api";
-import { auth, AuthError, type AuthResponse } from "../lib/auth";
+import {
+  auth,
+  AuthError,
+  oauth,
+  type AuthResponse,
+  type OAuthProviderName,
+  type OAuthProvidersStatus,
+} from "../lib/auth";
 
 interface LoginPageProps {
   /** Called after a successful multi-tenant login. */
@@ -28,6 +35,22 @@ export function LoginPage({
   const [token, setToken] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(false);
+  // OAuth providers status: ``null`` while we're still discovering, then
+  // ``{google, github}`` booleans. Buttons stay hidden until we know — avoids
+  // a flash of options that immediately disappear when the call resolves.
+  const [providers, setProviders] = useState<OAuthProvidersStatus | null>(null);
+
+  useEffect(() => {
+    if (legacyOnly) return;
+    // Best-effort: if discovery fails (e.g. backend missing the endpoint on
+    // an older deployment) we just leave all buttons hidden, no error UI.
+    oauth.getProvidersStatus().then(setProviders).catch(() => setProviders({ google: false, github: false }));
+  }, [legacyOnly]);
+
+  const startOAuth = (provider: OAuthProviderName) => {
+    // Top-level navigation — see comment in lib/auth.ts on why fetch won't do.
+    window.location.href = oauth.startUrl(provider);
+  };
 
   const handleCredentialsSubmit = async (e: FormEvent) => {
     e.preventDefault();
@@ -75,6 +98,36 @@ export function LoginPage({
             {mode === "credentials" ? "Sign in to your account" : "Enter your access token"}
           </p>
         </div>
+
+        {mode === "credentials" && providers && (providers.google || providers.github) && (
+          <div className="mb-4 space-y-2">
+            {providers.google && (
+              <button
+                type="button"
+                onClick={() => startOAuth("google")}
+                className="btn-secondary w-full flex items-center justify-center gap-2"
+              >
+                <Chrome className="h-4 w-4" />
+                Continue with Google
+              </button>
+            )}
+            {providers.github && (
+              <button
+                type="button"
+                onClick={() => startOAuth("github")}
+                className="btn-secondary w-full flex items-center justify-center gap-2"
+              >
+                <Github className="h-4 w-4" />
+                Continue with GitHub
+              </button>
+            )}
+            <div className="flex items-center gap-3 pt-2 text-[10px] text-gray-600 uppercase">
+              <div className="flex-1 h-px bg-gray-800" />
+              <span>or</span>
+              <div className="flex-1 h-px bg-gray-800" />
+            </div>
+          </div>
+        )}
 
         {mode === "credentials" ? (
           <form onSubmit={handleCredentialsSubmit}>
