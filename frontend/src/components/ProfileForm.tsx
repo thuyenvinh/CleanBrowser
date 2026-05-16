@@ -1,6 +1,7 @@
 import { Save, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Profile, ProfileCreateData } from "../lib/api";
+import { type Region, regionsApi } from "../lib/regions";
 import { ProfileVersionHistory } from "./ProfileVersionHistory";
 
 interface ProfileFormProps {
@@ -76,6 +77,11 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
   const [tagInput, setTagInput] = useState("");
   const [tagColor, setTagColor] = useState<string | null>("#6366f1");
   const [launchArgInput, setLaunchArgInput] = useState("");
+  const [regions, setRegions] = useState<Region[]>([]);
+
+  useEffect(() => {
+    regionsApi.list().then((r) => setRegions(r.regions)).catch(() => setRegions([]));
+  }, []);
 
   useEffect(() => {
     if (profile) {
@@ -101,6 +107,7 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
         color_scheme: profile.color_scheme,
         launch_args: profile.launch_args ?? [],
         notes: profile.notes,
+        region: profile.region,
         tags: profile.tags ?? [],
       });
     }
@@ -317,6 +324,19 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
               />
               Auto-detect timezone/locale from proxy IP (GeoIP)
             </label>
+            <div>
+              <label className="label">Region</label>
+              <select
+                className="input"
+                value={form.region ?? ""}
+                onChange={(e) => set("region", e.target.value || null)}
+              >
+                <option value="">Inherit from workspace</option>
+                {regions.map((r) => (
+                  <option key={r.code} value={r.code}>{r.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </section>
 

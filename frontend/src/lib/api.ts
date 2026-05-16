@@ -25,6 +25,7 @@ export interface Profile {
   color_scheme: string | null;
   launch_args: string[];
   notes: string | null;
+  region: string | null;
   user_data_dir: string;
   created_at: string;
   updated_at: string;
@@ -56,6 +57,7 @@ export interface ProfileCreateData {
   color_scheme?: string | null;
   launch_args?: string[];
   notes?: string | null;
+  region?: string | null;
   tags?: { tag: string; color: string | null }[];
 }
 

@@ -31,6 +31,7 @@ class ProfileCreate(BaseModel):
     color_scheme: Literal["light", "dark", "no-preference"] | None = None
     launch_args: list[str] = Field(default_factory=list)
     notes: str | None = None
+    region: str | None = None
     tags: list[TagCreate] | None = None
 
 
@@ -57,6 +58,7 @@ class ProfileUpdate(BaseModel):
     color_scheme: Literal["light", "dark", "no-preference"] | None = Field(default=None)
     launch_args: list[str] | None = None
     notes: str | None = Field(default=None)
+    region: str | None = Field(default=None)
     tags: list[TagCreate] | None = None
 
 
@@ -100,6 +102,7 @@ class ProfileResponse(BaseModel):
     color_scheme: str | None = None
     launch_args: list[str] = []
     notes: str | None = None
+    region: str | None = None
     user_data_dir: str
     created_at: str
     updated_at: str
@@ -591,3 +594,23 @@ class PresignedUrlResponse(BaseModel):
     expires_in: int
     storage_key: str
     size_bytes: int | None = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 wave 2 (task GGG) — region selector models.
+#
+# Backs ``GET /api/regions`` and the workspace/profile ``region`` fields. See
+# :mod:`backend.regions` for the source of truth on which region codes are
+# configured at runtime (via the ``WORKER_REGIONS`` env var).
+# ---------------------------------------------------------------------------
+
+
+class Region(BaseModel):
+    code: str
+    label: str
+    available: bool = True
+
+
+class RegionList(BaseModel):
+    regions: list[Region]
+    default: str

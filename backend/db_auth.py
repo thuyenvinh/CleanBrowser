@@ -199,16 +199,26 @@ def set_email_verified(user_id: str) -> None:
 
 
 def create_workspace(
-    tenant_id: str, name: str, owner_user_id: str
+    tenant_id: str,
+    name: str,
+    owner_user_id: str,
+    default_region: str = "local",
 ) -> dict[str, Any]:
     workspace_id = str(uuid.uuid4())
     with get_db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute(
-                """INSERT INTO workspaces (id, tenant_id, name, owner_user_id)
-                   VALUES (%s, %s, %s, %s)
+                """INSERT INTO workspaces
+                       (id, tenant_id, name, owner_user_id, default_region)
+                   VALUES (%s, %s, %s, %s, %s)
                    RETURNING *""",
-                (workspace_id, tenant_id, name, owner_user_id),
+                (
+                    workspace_id,
+                    tenant_id,
+                    name,
+                    owner_user_id,
+                    default_region,
+                ),
             )
             row = cur.fetchone()
         conn.commit()
