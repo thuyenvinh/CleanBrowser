@@ -291,3 +291,42 @@ def require_role(*allowed: str) -> Callable[..., dict[str, Any]]:
         return {**user, "current_role": role, "current_workspace_id": workspace_id}
 
     return _dep
+
+
+# ---------------------------------------------------------------------------
+# Quota enforcement dependency (Wave 5 phase 1 — task JJJ).
+#
+# The :mod:`backend.quota` module owns the actual check; this thin factory
+# adapts it into a FastAPI dependency so router authors can write
+# ``Depends(require_quota("create_profile"))`` once the wave-13 wiring task
+# arrives. Kept here (rather than inside ``quota.py``) so route authors find
+# it next to the existing ``require_role`` factory above — both follow the
+# same closure-over-config pattern.
+# ---------------------------------------------------------------------------
+
+
+def require_quota(action: str) -> Callable[..., Any]:
+    """Build a dependency that 402s if ``action`` would exceed the tenant's quota.
+
+    Usage::
+
+        @router.post("/profiles", dependencies=[Depends(require_quota("create_profile"))])
+        def create_profile(...):
+            ...
+
+    The actual check is delegated to :func:`backend.quota.check_quota`; on
+    success the resulting :class:`~backend.quota.QuotaCheckResult` is also
+    returned so handlers that want the ``current``/``limit`` numbers (e.g.
+    to surface "9 of 10 profiles used" in a response header) can bind it
+    via ``quota: QuotaCheckResult = Depends(require_quota("create_profile"))``.
+    """
+    # Lazy import keeps ``dependencies`` importable even if ``quota`` is
+    # being edited / not yet on disk during the wave's branch shuffling.
+    from . import quota as _quota
+
+    def _dep(user: dict[str, Any] = Depends(get_current_user)) -> Any:
+        result = _quota.check_quota(user["tenant_id"], action)  # type: ignore[arg-type]
+        result.raise_if_exceeded()
+        return result
+
+    return _dep
