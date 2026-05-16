@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from typing import Literal
 
 from pydantic import BaseModel, EmailStr, Field, field_validator
@@ -208,3 +209,23 @@ class ApiKeyPublic(BaseModel):
     scopes: list[str]
     last_used_at: str | None = None
     created_at: str
+
+
+class AuditLog(BaseModel):
+    """One row from ``audit_logs`` — the immutable trace of a mutation.
+
+    Surfaces rows produced by :mod:`backend.db_audit`. See
+    ``docs/ARCHITECTURE`` §2.2 and §2.9.
+    """
+
+    id: str
+    tenant_id: str | None
+    actor_user_id: str | None
+    action: str
+    resource_type: str | None
+    resource_id: str | None
+    ip: str | None
+    user_agent: str | None
+    status: str
+    payload: dict | None
+    ts: datetime
