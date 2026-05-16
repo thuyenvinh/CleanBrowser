@@ -5,8 +5,9 @@ import logging
 from datetime import datetime, timezone as tz
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
+from fastapi.responses import RedirectResponse
 
-from ..billing import stripe_adapter
+from ..billing import stripe_adapter, vnpay_adapter
 from ..dependencies import get_current_user
 
 logger = logging.getLogger(__name__)
@@ -140,3 +141,60 @@ async def stripe_webhook(
             db_billing.cancel_subscription(existing["id"], immediate=True)
 
     return {"received": True, "handled": True, "event_type": et}
+
+
+@router.post("/vnpay/checkout")
+async def vnpay_checkout(
+    body: dict, request: Request, user: dict = Depends(get_current_user)
+):
+    """body: {plan_id}. Creates VNPay payment URL for one-time payment."""
+    from .. import db_billing
+
+    if not vnpay_adapter.is_configured():
+        raise HTTPException(503, "VNPay not configured")
+    plan_id = body.get("plan_id")
+    plan = db_billing.get_plan(plan_id) if plan_id else None
+    if not plan:
+        raise HTTPException(404, "Plan not found")
+    # Approx convert USD cents -> VND (1 USD ~= 25,000 VND).
+    # Production: use real FX or per-plan VND price.
+    amount_vnd = int(plan["price_cents"] * 250)  # cents * 250 = USD * 25000
+    if amount_vnd <= 0:
+        raise HTTPException(400, "Free plan does not require payment")
+    base = str(request.base_url).rstrip("/")
+    result = vnpay_adapter.build_checkout_url(
+        tenant_id=user["tenant_id"],
+        plan_id=plan["id"],
+        amount_vnd=amount_vnd,
+        order_info=f"Subscribe to {plan['name']} ({user['tenant_id']})",
+        return_url=f"{base}/api/billing/vnpay/return",
+        client_ip=request.client.host if request.client else "127.0.0.1",
+    )
+    # Persist a pending subscription so callback can find it.
+    # status='trialing' is used as a "pending" placeholder until the callback
+    # confirms; a dedicated 'pending' status would land in a later wave.
+    db_billing.create_subscription(
+        tenant_id=user["tenant_id"],
+        plan_id=plan["id"],
+        status="trialing",
+        payment_provider="vnpay",
+        provider_subscription_id=result["vnp_TxnRef"],
+    )
+    return result
+
+
+@router.get("/vnpay/return")
+async def vnpay_return(request: Request):
+    from .. import db_billing
+
+    params = dict(request.query_params)
+    ok, txn_ref = vnpay_adapter.verify_callback(params)
+    if not ok:
+        return RedirectResponse(
+            f"/?billing=vnpay-failed&ref={txn_ref}", status_code=302
+        )
+    # Find subscription by provider_subscription_id and activate
+    sub = db_billing.get_subscription_by_provider_id(txn_ref)
+    if sub:
+        db_billing.update_subscription(sub["id"], status="active")
+    return RedirectResponse(f"/?billing=success&ref={txn_ref}", status_code=302)
