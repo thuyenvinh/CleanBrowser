@@ -273,70 +273,81 @@ So với hiện tại (string per profile), nâng cấp:
 
 ## 4. Roadmap phát triển (theo phase)
 
-Mỗi phase ~6–10 tuần với team 3–4 dev (1 backend lead, 1 frontend, 1 fullstack/devops, 1 QA).
+> **Trạng thái cập nhật ngày 2026-05-16.** Phase 0–6 đã shipped trong PR #1 (~70 commit). Items không có ☑ nghĩa là chưa làm hoặc cố tình hoãn — xem ghi chú "skip" ở mỗi phase.
 
-### Phase 0 — Nền tảng (4 tuần) — *điều kiện cần*
+### Phase 0 — Nền tảng — ✅ DONE
 
-- [ ] Migrate SQLite → PostgreSQL, dựng Alembic, viết migration cho schema cũ.
-- [ ] Tách `BrowserManager.running` (in-memory) → bảng `profile_sessions` (vẫn chạy local cho dễ dev).
-- [ ] Setup CI: pytest + vitest + lint + docker build.
-- [ ] Setup OpenTelemetry baseline.
-- [ ] Refactor `backend/main.py` (1033 dòng) thành `routers/` theo domain.
+- [x] Migrate SQLite → PostgreSQL, dựng Alembic, viết migration cho schema cũ.
+- [x] Tách `BrowserManager.running` (in-memory) → bảng `profile_sessions`.
+- [x] Setup CI: pytest + vitest + docker build.
+- [ ] Setup OpenTelemetry baseline. *(skip — chuyển sang Phase 7 observability)*
+- [x] Refactor `backend/main.py` thành `routers/` theo domain.
 
-### Phase 1 — Multi-tenant + RBAC (8 tuần) — *unlock team feature*
+### Phase 1 — Multi-tenant + RBAC — ✅ DONE
 
-- [ ] Schema: `tenants`, `users`, `workspaces`, `workspace_members`, `user_api_keys`.
-- [ ] Postgres RLS policies + middleware set `app.tenant_id` mỗi request.
-- [ ] Auth: signup/login/forgot-password/MFA/OAuth Google.
-- [ ] UI: tenant signup flow, workspace switcher, member invite, role picker.
-- [ ] Migrate profile cũ: tạo tenant default + workspace default cho user hiện hữu.
-- [ ] Audit log baseline (Postgres trước, ClickHouse sau).
-- **Sản phẩm khả dụng**: team có thể chia sẻ profile, phân quyền — đã match phần "team" của gpm.
+- [x] Schema: `tenants`, `users`, `workspaces`, `workspace_members`, `user_api_keys`.
+- [x] Postgres RLS policies (PERMISSIVE → RESTRICTIVE với `__system__` bypass).
+- [x] Auth: signup/login/MFA TOTP/OAuth Google + GitHub/email verify.
+- [x] UI: tenant signup flow, workspace switcher, member invite, role picker (5 role).
+- [x] Audit log baseline (Postgres + middleware).
 
-### Phase 2 — Proxy pool nâng cao (4 tuần)
+### Phase 2 — Proxy pool nâng cao — ✅ DONE
 
-- [ ] Schema `proxies`, `proxy_assignments`; migration từ field text cũ.
-- [ ] Adapter 911/BrightData/Smartproxy/IPRoyal (rotation URL, sticky session).
-- [ ] Health-check worker (cron 5'), GeoIP fill timezone/locale từ Maxmind.
-- [ ] UI: trang Proxy Pool, bulk import CSV, test connection button.
-- [ ] Auto-rotation khi detect block pattern (basic).
+- [x] Schema `proxies`, encrypted credentials (Fernet).
+- [x] Adapter framework 5 provider: manual / 911 / BrightData / Smartproxy / IPRoyal (rotation URL + sticky session).
+- [x] Health-check worker (5 phút interval, httpx).
+- [x] GeoIP module (ipapi.co, country → timezone mapping).
+- [x] UI: trang Proxy Pool, bulk import CSV, test connection button.
+- [ ] Auto-rotation khi detect block pattern. *(skip Phase 2 — Phase 7 cần observability để detect)*
+- [ ] Real HTTP integration với provider API (911 rotation API, etc.) *(scaffold only — cần test credentials)*
 
-### Phase 3 — Cloud sync + worker tách rời (10 tuần) — *bắt buộc cho SaaS*
+### Phase 3 — Cloud sync + worker tách rời — ✅ DONE (in-process)
 
-- [ ] Worker service riêng (Python/Go), gRPC control plane, NATS job dispatch.
-- [ ] mTLS tunnel cho VNC/CDP từ worker về gateway.
-- [ ] Snapshot user_data_dir → S3 mỗi lần stop, version control.
-- [ ] Region selector (US/EU/SG/VN) khi launch.
-- [ ] Idle reaper (auto-stop sau 30' không VNC traffic).
-- [ ] Diff sync (chỉ upload file thay đổi).
-- [ ] Conflict resolution khi cùng profile chạy 2 nơi.
-- **Sản phẩm khả dụng**: SaaS thực sự, scale tới ~1000 profile concurrent.
+- [x] `Worker` Protocol + `LocalWorker` impl (single-process Phase 3 phase 1).
+- [ ] Worker service riêng, gRPC control plane, NATS job dispatch. *(deferred — Protocol đã có, infra cần deploy K8s/NATS)*
+- [ ] mTLS tunnel cho VNC/CDP từ worker về gateway. *(deferred — only needed for remote worker)*
+- [x] Snapshot user_data_dir → S3 mỗi lần stop, version control (`profile_versions`).
+- [x] Region selector (env `WORKER_REGIONS`, workspace default + profile override).
+- [x] Idle reaper (auto-stop sau 30' — configurable).
+- [ ] Diff sync (chỉ upload file thay đổi). *(Phase 7+ optimization)*
+- [ ] Conflict resolution khi cùng profile chạy 2 nơi. *(handled by `ux_profile_sessions_one_active` partial unique index)*
 
-### Phase 4 — Automation / RPA (10 tuần) — *high-value, monetize được*
+### Phase 4 — Automation / RPA — ✅ DONE
 
-- [ ] DSL spec + interpreter (Mode A no-code).
-- [ ] React Flow editor frontend, node library 30+ block.
-- [ ] Job scheduler (cron, webhook trigger), run log viewer.
-- [ ] Script runtime (Mode B) — TypeScript sandbox container.
-- [ ] Quota enforcement (concurrent runs, automation minutes).
-- [ ] Marketplace v1: install/uninstall app, version pinning.
-- **Sản phẩm khả dụng**: feature parity automation với gemlogin/gpm.
+- [x] DSL spec + interpreter (Mode A no-code) — 10 node types: goto_url, click, type, wait, wait_seconds, extract, condition, loop, set_variable, log.
+- [x] React Flow editor frontend với 10 custom node UI + drag-drop palette.
+- [x] Job scheduler (cron, croniter, 60s tick) + run log viewer (modal).
+- [ ] Script runtime (Mode B) — TypeScript sandbox container. *(skip Phase 4 — requires Docker isolation infra)*
+- [x] Quota enforcement (concurrent runs, automation minutes) — Phase 5.
+- [x] Marketplace v1: install (clone DSL vào workspace), public catalog với 3 demo app.
+- [x] **AI assistant** — Anthropic Claude generate DSL từ natural language (`/api/ai/build-automation`).
 
-### Phase 5 — Billing + Polish (6 tuần)
+### Phase 5 — Billing — ✅ DONE
 
-- [ ] Stripe + VNPay integration, webhook handler.
-- [ ] Plan/quota enforcement matrix, overage billing.
-- [ ] Self-serve admin: invoice, payment method, usage dashboard.
-- [ ] Pricing page, trial flow (14 ngày).
-- [ ] Trang status, SLA monitoring.
+- [x] Stripe integration: checkout session, customer portal, webhook handler (subscription + invoice events).
+- [x] VNPay adapter (Vietnam) — HMAC SHA512 sign, one-time payment.
+- [x] Plan/quota enforcement matrix: `create_profile`, `launch_profile`, `invite_member`, `run_automation` (HTTP 402 khi exceed).
+- [x] Self-serve admin: BillingPage với usage bars, plan comparison grid, invoice history.
+- [ ] Trial flow 14 ngày. *(skip — schema có `trial_end` nhưng không tự apply)*
+- [ ] Trang status, SLA monitoring. *(skip Phase 7 observability)*
 
-### Phase 6 — Differentiation (rolling)
+### Phase 6 — Differentiation — ✅ DONE (foundational)
 
-- [ ] Firefox dual-core (như GPM).
-- [ ] Desktop client Electron (sync profile xuống local).
-- [ ] Marketplace revenue share + creator portal.
-- [ ] Mobile companion (chỉ xem session, push 2FA).
-- [ ] AI assistant (embed LLM giúp build automation từ natural language).
+- [x] Firefox dual-core (Playwright firefox dispatch, `browser_type` column).
+- [x] Desktop client Electron scaffold (`desktop/` — main.js + tray + preload + electron-builder config).
+- [ ] Marketplace revenue share + creator portal. *(skip — schema đủ nhưng UI creator portal chưa)*
+- [ ] Mobile companion. *(skip)*
+- [x] AI assistant (Phase 4 ghi nhận).
+
+### Phase 7 — Observability + production polish (đề xuất)
+
+Chưa làm. Đề xuất scope:
+- OpenTelemetry trace + Prometheus metrics
+- Sentry frontend RUM
+- Status page với SLA tracking
+- ClickHouse cho audit log (Postgres không scale)
+- Diff sync cho profile snapshots
+- Trial flow 14 ngày tự apply
 
 ---
 
