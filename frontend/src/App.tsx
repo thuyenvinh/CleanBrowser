@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
 import { Lock, PanelLeftClose, PanelLeft } from "lucide-react";
 import { useProfiles } from "./hooks/useProfiles";
+import { useAuth } from "./hooks/useAuth";
 import { api, setOnUnauthorized, type ProfileCreateData } from "./lib/api";
 import { ProfileList } from "./components/ProfileList";
 import { ProfileForm } from "./components/ProfileForm";
@@ -8,13 +9,18 @@ import { ProfileViewer } from "./components/ProfileViewer";
 import { LaunchButton } from "./components/LaunchButton";
 import { StatusIndicator } from "./components/StatusIndicator";
 import { LoginPage } from "./components/LoginPage";
+import { SignupPage } from "./components/SignupPage";
+import { WorkspaceSelector } from "./components/WorkspaceSelector";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
+type AuthView = "login" | "signup";
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [authRequired, setAuthRequired] = useState(false);
+  const [authView, setAuthView] = useState<AuthView>("login");
+  const authCtx = useAuth();
 
   useEffect(() => {
     setOnUnauthorized(() => setAuthState("required"));
@@ -35,6 +41,11 @@ export default function App() {
 
     return () => setOnUnauthorized(null);
   }, []);
+
+  // When useAuth confirms a multi-tenant session, mark auth ok.
+  useEffect(() => {
+    if (authCtx.user) setAuthState("ok");
+  }, [authCtx.user]);
 
   if (authState === "checking") {
     return (
@@ -69,14 +80,33 @@ export default function App() {
   }
 
   if (authState === "required") {
-    return <LoginPage onSuccess={() => setAuthState("ok")} />;
+    if (authView === "signup") {
+      return (
+        <SignupPage
+          onSuccess={() => setAuthState("ok")}
+          onSwitchToLogin={() => setAuthView("login")}
+        />
+      );
+    }
+    return (
+      <LoginPage
+        onSuccess={() => setAuthState("ok")}
+        onLegacySuccess={() => setAuthState("ok")}
+        onSwitchToSignup={() => setAuthView("signup")}
+      />
+    );
   }
 
   return (
     <AppContent
       authRequired={authRequired}
+      workspaces={authCtx.workspaces}
+      currentWorkspaceId={authCtx.currentWorkspaceId}
+      onSwitchWorkspace={authCtx.switchWorkspace}
       onLogout={async () => {
-        await api.logout();
+        await authCtx.logout();
+        try { await api.logout(); } catch { /* legacy endpoint may not exist */ }
+        setAuthView("login");
         setAuthState("required");
       }}
     />
@@ -85,10 +115,13 @@ export default function App() {
 
 interface AppContentProps {
   authRequired: boolean;
+  workspaces: { id: string; name: string }[];
+  currentWorkspaceId: string | null;
+  onSwitchWorkspace: (id: string) => void;
   onLogout: () => void;
 }
 
-function AppContent({ authRequired, onLogout }: AppContentProps) {
+function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWorkspace, onLogout }: AppContentProps) {
   const { profiles, loading, error, create, update, remove, launch, stop } = useProfiles();
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("empty");
@@ -193,6 +226,11 @@ function AppContent({ authRequired, onLogout }: AppContentProps) {
                 onStop={handleStop}
               />
             )}
+            <WorkspaceSelector
+              workspaces={workspaces}
+              currentWorkspaceId={currentWorkspaceId}
+              onSwitch={onSwitchWorkspace}
+            />
             {authRequired && (
               <button
                 onClick={onLogout}
