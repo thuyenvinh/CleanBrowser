@@ -570,3 +570,24 @@ class ProfileVersion(BaseModel):
     created_by_user_id: str | None = None
     created_by_session_id: str | None = None
     notes: str | None = None
+
+
+class RestoreResponse(BaseModel):
+    """Reply from ``POST /api/profiles/{id}/versions/{version_id}/restore``."""
+
+    restored: bool
+    version: int
+
+
+class PresignedUrlResponse(BaseModel):
+    """Reply from ``GET /api/profiles/{id}/versions/{version_id}/download``.
+
+    ``url`` is a short-lived signed download URL when the backend is S3-
+    compatible; for the LocalBackend it's a ``file://`` URL (see
+    :mod:`backend.storage`).
+    """
+
+    url: str
+    expires_in: int
+    storage_key: str
+    size_bytes: int | None = None

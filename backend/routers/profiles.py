@@ -27,6 +27,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 from .. import database as db
 from .. import db_auth
 from .. import db_proxy
+from .. import db_versions
 from ..dependencies import (
     ROLE_LEVEL,
     browser_mgr,
@@ -35,10 +36,13 @@ from ..dependencies import (
 )
 from ..models import (
     LaunchResponse,
+    PresignedUrlResponse,
     ProfileCreate,
     ProfileResponse,
     ProfileStatusResponse,
     ProfileUpdate,
+    ProfileVersion,
+    RestoreResponse,
     TagResponse,
 )
 
@@ -348,3 +352,116 @@ async def get_profile_status(
     _load_and_check(profile_id, user, ROLE_LEVEL["viewer"])
     status = browser_mgr.get_status(profile_id)
     return ProfileStatusResponse(**status)
+
+
+# ── Cloud snapshot versions (Phase 3 wave 2) ──────────────────────────────────
+#
+# The four endpoints below surface ``backend.db_versions`` over HTTP so the
+# SPA's ``ProfileVersionHistory`` panel can list, restore, delete, and
+# download snapshots that ``browser_manager`` uploads on stop. Authorization
+# follows the same workspace+role model as the rest of this router (viewer+
+# for read, editor+ for any mutation or signed-URL access).
+
+
+@router.get("/{profile_id}/versions", response_model=list[ProfileVersion])
+async def list_profile_versions(
+    profile_id: str,
+    user: dict[str, Any] | None = Depends(get_optional_user),
+):
+    _load_and_check(profile_id, user, ROLE_LEVEL["viewer"])
+    return db_versions.list_versions(profile_id)
+
+
+@router.post(
+    "/{profile_id}/versions/{version_id}/restore",
+    response_model=RestoreResponse,
+)
+async def restore_profile_version(
+    profile_id: str,
+    version_id: str,
+    user: dict[str, Any] | None = Depends(get_optional_user),
+):
+    profile = _load_and_check(profile_id, user, ROLE_LEVEL["editor"])
+    v = db_versions.get_version(version_id)
+    if not v or v["profile_id"] != profile_id:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    # Restoring a live profile would race with the running browser writing
+    # to ``user_data_dir`` — force the caller to stop first rather than
+    # silently corrupting state.
+    if profile_id in browser_mgr.running:
+        raise HTTPException(
+            status_code=409,
+            detail="Profile is running; stop it before restoring a version",
+        )
+
+    udir = profile.get("user_data_dir")
+    if not udir:
+        raise HTTPException(
+            status_code=500, detail="Profile has no user_data_dir configured"
+        )
+
+    from ..profile_snapshot import restore_from_storage
+
+    ok = await restore_from_storage(profile_id, version_id, udir)
+    if not ok:
+        raise HTTPException(
+            status_code=500, detail="Restore failed; see server logs"
+        )
+    return RestoreResponse(restored=True, version=v["version"])
+
+
+@router.delete("/{profile_id}/versions/{version_id}", status_code=204)
+async def delete_profile_version(
+    profile_id: str,
+    version_id: str,
+    user: dict[str, Any] | None = Depends(get_optional_user),
+):
+    _load_and_check(profile_id, user, ROLE_LEVEL["editor"])
+    v = db_versions.get_version(version_id)
+    if not v or v["profile_id"] != profile_id:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    # Best-effort delete from object storage first, then drop the index
+    # row. A storage failure shouldn't strand the row in the UI; we log
+    # the orphaned key for ops to GC later.
+    from .. import storage
+
+    try:
+        storage.delete(v["storage_key"])
+    except Exception:
+        logger.exception(
+            "failed to delete storage object %s", v["storage_key"]
+        )
+    db_versions.delete_version(version_id)
+
+
+@router.get(
+    "/{profile_id}/versions/{version_id}/download",
+    response_model=PresignedUrlResponse,
+)
+async def get_version_download_url(
+    profile_id: str,
+    version_id: str,
+    user: dict[str, Any] | None = Depends(get_optional_user),
+):
+    _load_and_check(profile_id, user, ROLE_LEVEL["editor"])
+    v = db_versions.get_version(version_id)
+    if not v or v["profile_id"] != profile_id:
+        raise HTTPException(status_code=404, detail="Version not found")
+
+    from .. import storage
+
+    try:
+        url = storage.presigned_url(v["storage_key"], expires_in=3600)
+    except Exception:
+        raise HTTPException(
+            status_code=503,
+            detail="Storage backend does not support presigned URLs in this mode",
+        )
+    return PresignedUrlResponse(
+        url=url,
+        expires_in=3600,
+        storage_key=v["storage_key"],
+        size_bytes=v["size_bytes"],
+    )
