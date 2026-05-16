@@ -18,8 +18,13 @@ find /data/profiles -maxdepth 2 -name 'SingletonSocket' -delete 2>/dev/null || t
 # Remove X11 lock files from previous displays
 rm -f /tmp/.X1*-lock 2>/dev/null || true
 
-# Start FastAPI (serves built React + API)
+# Run database migrations before starting the API.
+cd /app/backend
+echo "  Applying database migrations..."
+alembic upgrade head
 cd /app
+
+# Start FastAPI (serves built React + API)
 echo ""
 echo "  CloakBrowser Manager running at http://localhost:8080"
 echo ""

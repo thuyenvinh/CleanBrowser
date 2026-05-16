@@ -1,4 +1,18 @@
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cleanbrowser
+      POSTGRES_USER: cleanbrowser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-devpassword}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cleanbrowser"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   manager:
     build: .
     ports:
@@ -7,3 +21,10 @@ services:
       - ~/.cloakbrowser-manager:/data
     environment:
       - AUTH_TOKEN=${AUTH_TOKEN:-}
+      - DATABASE_URL=postgresql://cleanbrowser:${POSTGRES_PASSWORD:-devpassword}@postgres:5432/cleanbrowser
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:
