@@ -121,6 +121,10 @@ def _row_to_profile(row: dict[str, Any]) -> dict[str, Any]:
     # profiles (see migration 0005).
     if isinstance(profile.get("workspace_id"), uuid.UUID):
         profile["workspace_id"] = str(profile["workspace_id"])
+    # proxy_id (added in migration 0007) is also UUID-typed; mirror the
+    # ``workspace_id`` normalisation so downstream serialisers see a str.
+    if isinstance(profile.get("proxy_id"), uuid.UUID):
+        profile["proxy_id"] = str(profile["proxy_id"])
     return profile
 
 
@@ -128,6 +132,7 @@ def create_profile(
     name: str,
     fingerprint_seed: int | None = None,
     workspace_id: str | None = None,
+    proxy_id: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
     profile_id = str(uuid.uuid4())
@@ -144,9 +149,9 @@ def create_profile(
                     user_agent, screen_width, screen_height, gpu_vendor, gpu_renderer,
                     hardware_concurrency, humanize, human_preset, headless, geoip,
                     clipboard_sync, auto_launch, color_scheme, launch_args, notes,
-                    user_data_dir, workspace_id, created_at, updated_at
+                    user_data_dir, workspace_id, proxy_id, created_at, updated_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)""",
+                          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s)""",
                 (
                     profile_id, name, seed,
                     fields.get("proxy"),
@@ -168,7 +173,7 @@ def create_profile(
                     fields.get("color_scheme"),
                     json.dumps(fields.get("launch_args") or []),
                     fields.get("notes"),
-                    user_data_dir, workspace_id, now, now,
+                    user_data_dir, workspace_id, proxy_id, now, now,
                 ),
             )
             for t in tags:
@@ -265,7 +270,7 @@ def update_profile(profile_id: str, **fields: Any) -> dict[str, Any] | None:
         "user_agent", "screen_width", "screen_height", "gpu_vendor", "gpu_renderer",
         "hardware_concurrency", "humanize", "human_preset", "headless", "geoip",
         "clipboard_sync", "auto_launch", "color_scheme", "launch_args", "notes",
-        "workspace_id",
+        "workspace_id", "proxy_id",
     ):
         if col in fields:
             if col == "launch_args":

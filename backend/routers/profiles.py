@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import database as db
 from .. import db_auth
+from .. import db_proxy
 from ..dependencies import (
     ROLE_LEVEL,
     browser_mgr,
@@ -133,6 +134,40 @@ def _load_and_check(
     return profile
 
 
+def _validate_proxy_id_for_workspace(
+    proxy_id: str | None,
+    workspace_id: str | None,
+    user: dict[str, Any] | None,
+) -> None:
+    """Ensure ``proxy_id`` (if given) belongs to ``workspace_id``.
+
+    Cross-workspace assignment is rejected with 404 (mirrors the rest of
+    this router's "don't leak existence across tenants" stance). For
+    authenticated callers we also enforce viewer+ membership on the
+    proxy's workspace via :func:`check_role_for_workspace` — a user can't
+    attach a proxy from a workspace they have no role in even if they
+    somehow guessed the id.
+
+    Unauthenticated / legacy callers (``user is None``) skip the role
+    check but still need the proxy to live in the same workspace as the
+    profile (or — if the profile itself is workspace-less in legacy
+    mode — the proxy must simply exist).
+    """
+    if not proxy_id:
+        return
+    proxy = db_proxy.get_proxy(proxy_id)
+    if proxy is None:
+        raise HTTPException(status_code=404, detail="Proxy not found")
+    proxy_ws = proxy.get("workspace_id")
+    if workspace_id is not None and proxy_ws != workspace_id:
+        # Don't tell the caller why — keep parity with the 404-on-cross-
+        # tenant pattern used for profiles.
+        raise HTTPException(status_code=404, detail="Proxy not found")
+    # Authenticated callers must have viewer+ in the proxy's workspace.
+    if user is not None:
+        check_role_for_workspace(user, proxy_ws, ROLE_LEVEL["viewer"])
+
+
 def _decorate_with_runtime(profile: dict[str, Any]) -> dict[str, Any]:
     """Attach the live status / vnc / cdp fields onto a profile dict."""
     status = browser_mgr.get_status(profile["id"])
@@ -183,6 +218,12 @@ async def create_profile(
         data["workspace_id"] = target_ws
     # else: leave workspace_id unset → create_profile defaults to NULL.
 
+    # If the caller is binding a proxy, validate workspace membership before
+    # we INSERT — otherwise we'd half-create a profile and then 404.
+    _validate_proxy_id_for_workspace(
+        data.get("proxy_id"), data.get("workspace_id"), user
+    )
+
     profile = db.create_profile(**data)
     return ProfileResponse(**_decorate_with_runtime(profile))
 
@@ -204,13 +245,23 @@ async def update_profile(
 ):
     # Authorize first so we don't leak existence by failing on a different
     # error path further down for cross-workspace ids.
-    _load_and_check(profile_id, user, ROLE_LEVEL["editor"])
+    existing = _load_and_check(profile_id, user, ROLE_LEVEL["editor"])
 
     # Only pass fields that were explicitly set
     data = req.model_dump(exclude_unset=True)
     tags = data.pop("tags", None)
     if tags is not None:
         data["tags"] = [t.model_dump() if hasattr(t, "model_dump") else t for t in tags]
+
+    # If proxy_id is being set / changed, validate it lives in the same
+    # workspace as the profile we're editing. ``exclude_unset`` means an
+    # explicit ``None`` (unbind) is allowed through; the helper short-
+    # circuits on ``None`` so it's a no-op in that case.
+    if "proxy_id" in data:
+        _validate_proxy_id_for_workspace(
+            data["proxy_id"], existing.get("workspace_id"), user
+        )
+
     profile = db.update_profile(profile_id, **data)
     if not profile:
         raise HTTPException(status_code=404, detail="Profile not found")

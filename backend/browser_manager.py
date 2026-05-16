@@ -232,9 +232,30 @@ class BrowserManager:
             extra_args += profile.get("launch_args") or []
             extra_args.append(f"--remote-debugging-port={cdp_port}")
 
-            # Normalize proxy format (host:port:user:pass → http://user:pass@host:port)
-            raw_proxy = profile.get("proxy") or None
-            proxy = _normalize_proxy(raw_proxy) if raw_proxy else None
+            # Resolve proxy. Preference order (Phase 2, task U):
+            #   1. profile.proxy_id → look up the workspace-scoped proxy pool
+            #      row and build a fully-qualified URL via db_proxy.
+            #      Failure (missing row, decrypt error) fails the launch
+            #      loudly — silent fallback would leak the user's real IP.
+            #   2. legacy profile.proxy TEXT field → keep parsing
+            #      ``host:port[:user:pass]`` shapes.
+            proxy: str | None = None
+            proxy_id = profile.get("proxy_id")
+            if proxy_id:
+                try:
+                    from .db_proxy import build_proxy_url
+
+                    proxy = build_proxy_url(proxy_id)
+                except Exception as exc:
+                    logger.error(
+                        "failed to build proxy URL for proxy_id=%s: %s",
+                        proxy_id, exc,
+                    )
+                    raise RuntimeError(f"proxy unavailable: {exc}") from exc
+            else:
+                raw_proxy = profile.get("proxy") or None
+                if raw_proxy:
+                    proxy = _normalize_proxy(raw_proxy)
             if proxy:
                 _validate_proxy(proxy)
 

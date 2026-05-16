@@ -11,7 +11,8 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 class ProfileCreate(BaseModel):
     name: str
     fingerprint_seed: int | None = None  # random if not set
-    proxy: str | None = None  # "http://user:pass@host:port" or null
+    proxy: str | None = None  # legacy "http://user:pass@host:port" or null
+    proxy_id: str | None = None  # FK into proxies pool; preferred over ``proxy``
     timezone: str | None = None  # "America/New_York"
     locale: str | None = None  # "en-US"
     platform: Literal["windows", "macos", "linux"] = "windows"
@@ -37,6 +38,7 @@ class ProfileUpdate(BaseModel):
     name: str | None = None
     fingerprint_seed: int | None = None
     proxy: str | None = Field(default=None)
+    proxy_id: str | None = Field(default=None)
     timezone: str | None = Field(default=None)
     locale: str | None = Field(default=None)
     platform: Literal["windows", "macos", "linux"] | None = None
@@ -73,6 +75,7 @@ class ProfileResponse(BaseModel):
     name: str
     fingerprint_seed: int
     proxy: str | None = None
+    proxy_id: str | None = None
     timezone: str | None = None
     locale: str | None = None
     platform: str = "windows"
