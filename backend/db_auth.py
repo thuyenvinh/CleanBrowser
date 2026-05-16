@@ -279,6 +279,75 @@ def get_member_role(workspace_id: str, user_id: str) -> str | None:
             return row[0] if row else None
 
 
+def update_workspace_member_role(
+    workspace_id: str, user_id: str, role: str
+) -> bool:
+    """Update the role of an existing workspace member.
+
+    Returns ``True`` if a row was updated, ``False`` if no membership exists
+    for ``(workspace_id, user_id)``. Raises ``ValueError`` for invalid roles.
+    """
+    _require_role(role)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE workspace_members
+                   SET role = %s
+                   WHERE workspace_id = %s AND user_id = %s""",
+                (role, workspace_id, user_id),
+            )
+            updated = cur.rowcount > 0
+        conn.commit()
+    return updated
+
+
+def count_workspace_owners(workspace_id: str) -> int:
+    """Return how many members of ``workspace_id`` hold the ``owner`` role."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """SELECT count(*) FROM workspace_members
+                   WHERE workspace_id = %s AND role = 'owner'""",
+                (workspace_id,),
+            )
+            row = cur.fetchone()
+            return int(row[0]) if row else 0
+
+
+def list_workspace_members(workspace_id: str) -> list[dict[str, Any]]:
+    """List members of a workspace with joined user email.
+
+    Each row contains ``user_id``, ``email``, ``role``, ``created_at``.
+    """
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT m.user_id, u.email, m.role, m.created_at
+                   FROM workspace_members m
+                   JOIN users u ON u.id = m.user_id
+                   WHERE m.workspace_id = %s
+                   ORDER BY m.created_at ASC""",
+                (workspace_id,),
+            )
+            return [_row_to_dict(r) for r in cur.fetchall()]  # type: ignore[misc]
+
+
+def get_user_by_email_in_tenant(
+    tenant_id: str, email: str
+) -> dict[str, Any] | None:
+    """Look up a user by email scoped to a tenant (case-insensitive)."""
+    normalized = _normalize_email(email)
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM users
+                   WHERE tenant_id = %s AND lower(email) = %s
+                   LIMIT 1""",
+                (tenant_id, normalized),
+            )
+            return _row_to_dict(cur.fetchone())
+
+
 # ---------------------------------------------------------------------------
 # API keys
 # ---------------------------------------------------------------------------

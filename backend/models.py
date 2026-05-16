@@ -179,6 +179,39 @@ class WorkspaceMember(BaseModel):
     role: Literal["owner", "admin", "editor", "launcher", "viewer"]
 
 
+class WorkspaceCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+
+
+class WorkspaceMemberPublic(BaseModel):
+    """A workspace_members row joined with the user's email."""
+
+    user_id: str
+    email: EmailStr
+    role: Literal["owner", "admin", "editor", "launcher", "viewer"]
+    created_at: str
+
+
+class WorkspaceWithMembers(BaseModel):
+    """A workspace plus its full member list — used by the detail endpoint."""
+
+    id: str
+    tenant_id: str
+    name: str
+    owner_user_id: str
+    created_at: str
+    members: list[WorkspaceMemberPublic] = []
+
+
+class InviteMemberRequest(BaseModel):
+    email: EmailStr
+    role: Literal["owner", "admin", "editor", "launcher", "viewer"]
+
+
+class UpdateMemberRoleRequest(BaseModel):
+    role: Literal["owner", "admin", "editor", "launcher", "viewer"]
+
+
 class SignupRequest(BaseModel):
     email: EmailStr
     password: str = Field(min_length=8)

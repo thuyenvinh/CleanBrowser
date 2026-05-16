@@ -38,6 +38,7 @@ from .routers import clipboard as clipboard_router
 from .routers import profiles as profiles_router
 from .routers import system as system_router
 from .routers import vnc as vnc_router
+from .routers import workspaces as workspaces_router
 
 # Re-export RFB helpers so existing tests that do
 # ``from backend.main import _filter_rfb_client_messages`` keep working.
@@ -152,6 +153,7 @@ app.add_middleware(AuthMiddleware)
 # Mount domain routers — order doesn't affect routing, but we list them
 # from most specific to least specific for readability.
 app.include_router(auth_router.router)
+app.include_router(workspaces_router.router)
 app.include_router(profiles_router.router)
 app.include_router(vnc_router.router)
 app.include_router(cdp_router.router)
