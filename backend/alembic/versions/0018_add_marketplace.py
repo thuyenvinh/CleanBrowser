@@ -190,7 +190,9 @@ def upgrade() -> None:
     # Three official demo flows — gives the marketplace UI immediate signal
     # on first launch. UUIDs hard-coded so repeated upgrade/downgrade in
     # dev stays stable.
-    op.execute(
+    # Use exec_driver_sql so SQLAlchemy doesn't parse ``:1``/``:5000`` inside
+    # the JSON literals as bind parameters.
+    op.get_bind().exec_driver_sql(
         """
         INSERT INTO marketplace_apps (
             id, slug, name, description, category, kind,
