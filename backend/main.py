@@ -34,6 +34,7 @@ from .dependencies import (
 )
 from .middleware_audit import AuditMiddleware
 from .routers import auth as auth_router
+from .routers import automations as automations_router
 from .routers import cdp as cdp_router
 from .routers import clipboard as clipboard_router
 from .routers import profiles as profiles_router
@@ -160,6 +161,7 @@ app.include_router(auth_router.router)
 app.include_router(workspaces_router.router)
 app.include_router(profiles_router.router)
 app.include_router(proxies_router.router)
+app.include_router(automations_router.router)
 app.include_router(vnc_router.router)
 app.include_router(cdp_router.router)
 app.include_router(clipboard_router.router)
