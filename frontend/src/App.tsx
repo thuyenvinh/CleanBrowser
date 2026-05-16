@@ -13,6 +13,7 @@ import { SignupPage } from "./components/SignupPage";
 import { WorkspaceSelector } from "./components/WorkspaceSelector";
 import { ProxyPage } from "./components/ProxyPage";
 import { AutomationPage } from "./components/AutomationPage";
+import { EmailVerificationBanner } from "./components/EmailVerificationBanner";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
@@ -115,6 +116,8 @@ export default function App() {
       workspaces={authCtx.workspaces}
       currentWorkspaceId={authCtx.currentWorkspaceId}
       onSwitchWorkspace={authCtx.switchWorkspace}
+      userEmail={authCtx.user?.email ?? null}
+      userEmailVerified={authCtx.user?.email_verified_at ?? null}
       onLogout={async () => {
         await authCtx.logout();
         try { await api.logout(); } catch { /* legacy endpoint may not exist */ }
@@ -130,10 +133,12 @@ interface AppContentProps {
   workspaces: { id: string; name: string }[];
   currentWorkspaceId: string | null;
   onSwitchWorkspace: (id: string) => void;
+  userEmail: string | null;
+  userEmailVerified: string | null;
   onLogout: () => void;
 }
 
-function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWorkspace, onLogout }: AppContentProps) {
+function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWorkspace, userEmail, userEmailVerified, onLogout }: AppContentProps) {
   // Pass ``currentWorkspaceId`` so useProfiles refetches whenever the user
   // switches workspace (the header injection happens in lib/api).
   const { profiles, loading, error, create, update, remove, launch, stop } =
@@ -216,6 +221,11 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
 
       {/* Main panel */}
       <div className="flex-1 flex flex-col min-w-0">
+        {/* Email verification nag — only when the multi-tenant session is
+            present AND the user hasn't verified yet. */}
+        {userEmail && !userEmailVerified && (
+          <EmailVerificationBanner email={userEmail} />
+        )}
         {/* Top bar */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface-1">
           <div className="flex items-center gap-3">

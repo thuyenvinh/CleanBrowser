@@ -159,13 +159,20 @@ class Tenant(BaseModel):
 
 
 class UserPublic(BaseModel):
-    """A user row safe to serialise to clients — never includes ``password_hash``."""
+    """A user row safe to serialise to clients — never includes ``password_hash``.
+
+    ``email_verified_at`` is an ISO-formatted timestamp when the user has
+    completed the email verification flow (``POST /api/auth/verify-email``),
+    or ``None`` otherwise. The SPA uses it to decide whether to render the
+    "please verify your email" banner.
+    """
 
     id: str
     tenant_id: str
     email: EmailStr
     status: str = "active"
     created_at: str
+    email_verified_at: str | None = None
 
 
 class Workspace(BaseModel):
@@ -491,3 +498,48 @@ class ScheduleUpdate(BaseModel):
     enabled: bool | None = None
     timezone: str | None = None
     profile_id: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Email verification (Phase 1 closure — see ``backend/routers/auth.py``)
+# ---------------------------------------------------------------------------
+
+
+class ResendVerificationResponse(BaseModel):
+    """Reply from ``POST /api/auth/resend-verification``.
+
+    Exactly one of the two fields is set: ``already_verified`` short-circuits
+    when the caller's account is already verified (no email is sent), while
+    ``sent`` reports the outcome of the SMTP submission otherwise.
+    """
+
+    sent: bool | None = None
+    already_verified: bool | None = None
+
+
+# ---------------------------------------------------------------------------
+# OAuth (Phase 1 task WW — Google + GitHub social login)
+#
+# These models surface the OAuth provider abstraction defined in
+# :mod:`backend.oauth` to the public API. The data layer (``oauth_provider``
+# / ``oauth_provider_user_id`` columns added in migration 0010) is not
+# exposed directly — only the front-end-facing "is this provider configured?"
+# status is, so the SPA can decide which social-login buttons to render.
+# ---------------------------------------------------------------------------
+
+
+OAuthProviderName = Literal["google", "github"]
+
+
+class OAuthProvidersStatus(BaseModel):
+    """Reply from ``GET /api/auth/oauth/providers``.
+
+    Each field is ``True`` iff the matching pair of environment variables
+    (``<PROVIDER>_OAUTH_CLIENT_ID`` + ``<PROVIDER>_OAUTH_CLIENT_SECRET``)
+    are both set. The frontend hides the corresponding "Continue with X"
+    button when the value is ``False`` so users don't see options that
+    will fail at the ``/start`` step.
+    """
+
+    google: bool = False
+    github: bool = False

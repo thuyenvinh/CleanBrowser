@@ -507,3 +507,187 @@ def signup(
     workspace = create_workspace(tenant["id"], "Default", user["id"])
     add_workspace_member(workspace["id"], user["id"], "owner")
     return tenant, user, workspace
+
+
+# ---------------------------------------------------------------------------
+# Email verification tokens (migration 0011)
+#
+# One-shot tokens emailed at signup / resend. The plaintext blob is only
+# returned from ``create_email_verification_token`` so the caller can stitch
+# it into the verification URL — only its SHA-256 lives in the table, same
+# pattern as ``user_api_keys.key_hash`` above.
+# ---------------------------------------------------------------------------
+
+
+def create_email_verification_token(
+    user_id: str, ttl_hours: int = 24
+) -> tuple[dict[str, Any], str]:
+    """Mint a fresh verification token for ``user_id``.
+
+    Returns ``(record, plaintext_token)``. The plaintext is shown ONCE to the
+    caller (so it can be emailed) and never persisted.
+    """
+    token = secrets.token_urlsafe(_TOKEN_BYTES)
+    token_hash = _hash_token(token)
+    token_id = str(uuid.uuid4())
+    expires_at = _now_dt() + datetime.timedelta(hours=ttl_hours)
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO email_verification_tokens
+                       (id, user_id, token_hash, expires_at)
+                   VALUES (%s, %s, %s, %s)
+                   RETURNING *""",
+                (token_id, user_id, token_hash, expires_at),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row), token  # type: ignore[return-value]
+
+
+def consume_email_verification_token(token: str) -> str | None:
+    """Verify ``token``, mark it used, return its ``user_id`` on success.
+
+    Returns ``None`` if the token is unknown, expired, or already consumed —
+    callers should treat all three identically (a generic "invalid link"
+    response) so we don't leak whether a token ever existed.
+    """
+    token_hash = _hash_token(token)
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, user_id FROM email_verification_tokens
+                   WHERE token_hash = %s
+                     AND used_at IS NULL
+                     AND expires_at > now()""",
+                (token_hash,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            cur.execute(
+                """UPDATE email_verification_tokens
+                   SET used_at = now()
+                   WHERE id = %s""",
+                (row["id"],),
+            )
+        conn.commit()
+    return str(row["user_id"])
+
+
+# ---------------------------------------------------------------------------
+# OAuth (Phase 1 task WW)
+#
+# These helpers back the OAuth callback in :mod:`backend.routers.auth`. They
+# layer on top of the regular tenant/user/workspace primitives above so the
+# OAuth path produces the exact same row shapes the rest of the app expects
+# — only the ``oauth_provider`` / ``oauth_provider_user_id`` columns added in
+# migration 0010 distinguish an OAuth user from a password user.
+#
+# An OAuth user still has a NOT NULL ``password_hash`` (the schema requires
+# it). We persist a hash of a fresh random secret that nobody knows; the
+# password login path cannot succeed for them because :func:`verify_password`
+# is only ever called with user-supplied input. This avoids relaxing the NOT
+# NULL constraint, which would weaken the invariant that password-mode users
+# always have a verifiable hash.
+# ---------------------------------------------------------------------------
+
+
+def get_user_by_oauth(
+    provider: str, provider_user_id: str
+) -> dict[str, Any] | None:
+    """Look up the user previously linked to ``(provider, provider_user_id)``.
+
+    Returns ``None`` if no such link exists; the caller then decides whether
+    to link the OAuth identity to an existing email-match user or to mint a
+    fresh tenant + user via :func:`signup_oauth`.
+    """
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM users
+                   WHERE oauth_provider = %s
+                     AND oauth_provider_user_id = %s
+                   LIMIT 1""",
+                (provider, provider_user_id),
+            )
+            return _row_to_dict(cur.fetchone())
+
+
+def link_oauth(
+    user_id: str, provider: str, provider_user_id: str
+) -> None:
+    """Attach an OAuth identity to an existing user row.
+
+    Called when an OAuth callback resolves to an email that already has a
+    password-mode account — we link rather than reject so users don't end up
+    with two accounts for the same email address. The partial unique index
+    on ``(oauth_provider, oauth_provider_user_id)`` prevents a single IdP
+    identity from being linked to two users.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE users
+                   SET oauth_provider = %s,
+                       oauth_provider_user_id = %s,
+                       updated_at = now()
+                   WHERE id = %s""",
+                (provider, provider_user_id, user_id),
+            )
+        conn.commit()
+
+
+def signup_oauth(
+    provider: str,
+    provider_user_id: str,
+    email: str,
+    name: str | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """Provision a brand-new tenant + user + workspace from an OAuth identity.
+
+    Mirrors :func:`signup` but:
+
+    * The password column is filled with an argon2 hash of a fresh random
+      secret nobody possesses — keeps the NOT NULL invariant intact while
+      ensuring the password login path can never authenticate this user.
+    * The OAuth identity columns are set in the same INSERT to avoid a
+      window in which a user row exists without its IdP link (which would
+      let a parallel OAuth callback for the same identity create a
+      duplicate row before :func:`get_user_by_oauth` would see it).
+    * ``email_verified_at`` is stamped to ``now()`` — the IdP has already
+      proven the user controls the address.
+    """
+    normalized_email = _normalize_email(email)
+    derived_tenant_name = name or normalized_email.split("@", 1)[0]
+
+    tenant = create_tenant(derived_tenant_name)
+    # Inline user creation so we can set OAuth columns + email_verified_at
+    # in the same INSERT — avoids the two-step race noted above.
+    user_id = str(uuid.uuid4())
+    unusable_password_hash = hash_password(secrets.token_urlsafe(32))
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO users
+                       (id, tenant_id, email, password_hash,
+                        oauth_provider, oauth_provider_user_id,
+                        email_verified_at)
+                   VALUES (%s, %s, %s, %s, %s, %s, now())
+                   RETURNING *""",
+                (
+                    user_id,
+                    tenant["id"],
+                    normalized_email,
+                    unusable_password_hash,
+                    provider,
+                    provider_user_id,
+                ),
+            )
+            user_row = cur.fetchone()
+        conn.commit()
+    user = _row_to_dict(user_row)  # type: ignore[arg-type]
+    assert user is not None  # just inserted
+    workspace = create_workspace(tenant["id"], "Default", user["id"])
+    add_workspace_member(workspace["id"], user["id"], "owner")
+    return tenant, user, workspace

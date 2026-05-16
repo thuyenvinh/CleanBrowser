@@ -16,6 +16,12 @@ export interface User {
   id: string;
   email: string;
   tenant_id: string;
+  /**
+   * ISO timestamp when the user's email was verified, or ``null`` while
+   * they're still in the unverified state. Used by ``EmailVerificationBanner``
+   * to decide whether to nag.
+   */
+  email_verified_at?: string | null;
 }
 
 export interface Workspace {
@@ -106,4 +112,26 @@ export const auth = {
   me: () => authRequest<MeResponse>("/api/auth/me"),
 
   listWorkspaces: () => authRequest<Workspace[]>("/api/workspaces"),
+};
+
+/**
+ * Email-verification client. Backed by the endpoints added in
+ * ``backend/routers/auth.py`` for Phase 1 closure:
+ *
+ *   GET  /api/auth/verify-email?token=…  (used by the email link, not from JS)
+ *   POST /api/auth/resend-verification   (banner-driven, requires session)
+ *
+ * The verify GET intentionally lives outside this module because it's a
+ * server-rendered redirect, not a JSON endpoint.
+ */
+export interface ResendVerificationResult {
+  sent?: boolean;
+  already_verified?: boolean;
+}
+
+export const verification = {
+  resend: () =>
+    authRequest<ResendVerificationResult>("/api/auth/resend-verification", {
+      method: "POST",
+    }),
 };

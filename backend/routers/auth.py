@@ -28,7 +28,7 @@ import starlette.requests
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
 from pydantic import ValidationError
 
-from .. import db_auth
+from .. import db_auth, email_sender
 from ..auth_tokens import JWT_LIFETIME_SECONDS, encode_session
 from ..dependencies import SESSION_COOKIE, _is_https, get_current_user
 from ..models import (
@@ -37,6 +37,7 @@ from ..models import (
     MfaDisableRequest,
     MfaEnableRequest,
     MfaSetupResponse,
+    ResendVerificationResponse,
     SignupRequest,
     UserPublic,
     Workspace,
@@ -86,6 +87,7 @@ def _user_public(user_row: dict[str, Any]) -> dict[str, Any]:
         email=user_row["email"],
         status=user_row.get("status", "active"),
         created_at=user_row["created_at"],
+        email_verified_at=user_row.get("email_verified_at"),
     ).model_dump()
 
 
@@ -151,7 +153,9 @@ async def auth_status(request: starlette.requests.Request):
 
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
-async def auth_signup(body: SignupRequest, response: Response):
+async def auth_signup(
+    body: SignupRequest, request: Request, response: Response
+):
     existing = db_auth.get_user_by_email(body.email)
     if existing is not None:
         raise HTTPException(status_code=409, detail="email already registered")
@@ -165,6 +169,19 @@ async def auth_signup(body: SignupRequest, response: Response):
     except Exception:
         logger.exception("signup failed for email=%s", body.email)
         raise HTTPException(status_code=500, detail="signup failed")
+
+    # Fire-and-forget verification email. A broken mailer must not block
+    # signup itself — the user can always trigger a resend from the banner.
+    try:
+        _, verify_token = db_auth.create_email_verification_token(user["id"])
+        verify_url = (
+            str(request.url_for("verify_email_get")) + f"?token={verify_token}"
+        )
+        email_sender.send_verification_email(user["email"], verify_url)
+    except Exception:
+        logger.exception(
+            "failed to send verification email for user=%s", user["id"]
+        )
 
     token = encode_session(user["id"], user["tenant_id"])
     _set_session_cookie(response, token)
@@ -365,3 +382,53 @@ async def auth_mfa_disable(
 
     db_auth.disable_mfa(user["id"])
     return {"enabled": False}
+
+
+# ---------------------------------------------------------------------------
+# Email verification
+#
+# Flow (see also ``backend/email_sender.py`` and migration 0011):
+#   1. Signup mints a 256-bit URL-safe token, stores only its SHA-256, and
+#      emails the plaintext as a link to GET /api/auth/verify-email.
+#   2. The user clicks the link; we consume the token (one-shot, 24h TTL),
+#      flip ``users.email_verified_at``, and redirect them to ``/?verified=1``
+#      so the SPA can drop its "please verify" banner.
+#   3. The banner can also POST /api/auth/resend-verification, which mints a
+#      fresh token and emails it again. We never reveal "already verified"
+#      via the verify endpoint (any consumed/expired/unknown token gets the
+#      same generic error) but we *do* tell the authenticated resend caller
+#      so the banner can stop nagging.
+# ---------------------------------------------------------------------------
+
+
+@router.get("/verify-email", name="verify_email_get")
+async def verify_email_get(token: str):
+    from fastapi.responses import HTMLResponse, RedirectResponse
+
+    user_id = db_auth.consume_email_verification_token(token)
+    if not user_id:
+        return HTMLResponse(
+            "<h1>Invalid or expired verification link</h1>"
+            "<p>Please request a new verification email from the app.</p>",
+            status_code=400,
+        )
+    db_auth.set_email_verified(user_id)
+    # Redirect to the SPA root with a query flag the frontend can pick up to
+    # show a transient success toast; the SPA will also notice the missing
+    # ``email_verified_at`` after a fresh /api/auth/me round-trip.
+    return RedirectResponse("/?verified=1", status_code=302)
+
+
+@router.post("/resend-verification", response_model=ResendVerificationResponse)
+async def resend_verification(
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    if user.get("email_verified_at"):
+        return ResendVerificationResponse(already_verified=True)
+    _, verify_token = db_auth.create_email_verification_token(user["id"])
+    verify_url = (
+        str(request.url_for("verify_email_get")) + f"?token={verify_token}"
+    )
+    sent = email_sender.send_verification_email(user["email"], verify_url)
+    return ResendVerificationResponse(sent=sent)
