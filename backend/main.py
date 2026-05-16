@@ -37,6 +37,7 @@ from .dependencies import (
 from .middleware_audit import AuditMiddleware
 from .routers import auth as auth_router
 from .routers import automations as automations_router
+from .routers import billing as billing_router
 from .routers import cdp as cdp_router
 from .routers import clipboard as clipboard_router
 from .routers import profiles as profiles_router
@@ -174,6 +175,7 @@ app.include_router(vnc_router.router)
 app.include_router(cdp_router.router)
 app.include_router(clipboard_router.router)
 app.include_router(system_router.router)
+app.include_router(billing_router.router)
 
 
 # ── Static Frontend ───────────────────────────────────────────────────────────
