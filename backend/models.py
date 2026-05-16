@@ -377,3 +377,117 @@ class ProxyBulkResult(BaseModel):
     created: int
     failed: list[dict]
     proxies: list[Proxy]
+
+
+# ---------------------------------------------------------------------------
+# Phase 4 Automation / RPA models.
+#
+# Surface for the four automation tables from ``docs/ARCHITECTURE`` §2.6;
+# rows produced by :mod:`backend.db_automation`. Not yet wired into any
+# router or engine — the interpreter / scheduler / worker land in
+# follow-up Phase 4 tasks. ``Literal`` enums mirror the frozensets in
+# ``db_automation`` so a router using these models gets the same
+# validation envelope the data layer enforces.
+# ---------------------------------------------------------------------------
+
+
+AutomationKind = Literal["flow", "script"]
+AutomationScriptLanguage = Literal["typescript", "python"]
+AutomationRunStatus = Literal[
+    "queued", "running", "success", "failure", "cancelled"
+]
+AutomationTrigger = Literal["manual", "schedule", "webhook", "api"]
+
+
+class Automation(BaseModel):
+    id: str
+    workspace_id: str
+    name: str
+    description: str | None = None
+    kind: AutomationKind
+    latest_version_id: str | None = None
+    created_at: datetime
+    updated_at: datetime
+
+
+class AutomationCreate(BaseModel):
+    name: str = Field(min_length=1, max_length=200)
+    kind: AutomationKind
+    description: str | None = None
+
+
+class AutomationUpdate(BaseModel):
+    name: str | None = Field(default=None, min_length=1, max_length=200)
+    description: str | None = None
+
+
+class AutomationVersion(BaseModel):
+    id: str
+    automation_id: str
+    version: int
+    kind: AutomationKind
+    dsl_json: dict | None = None
+    script_language: AutomationScriptLanguage | None = None
+    script_code: str | None = None
+    created_at: datetime
+    created_by_user_id: str | None = None
+
+
+class AutomationVersionCreate(BaseModel):
+    """Payload to publish a new version of an automation.
+
+    ``kind`` is inherited from the parent automation server-side, so the
+    payload doesn't repeat it. The server validates that exactly the right
+    sub-fields are populated for the kind (DSL for flow, code+language for
+    script) in the data layer / router.
+    """
+
+    dsl_json: dict | None = None
+    script_language: AutomationScriptLanguage | None = None
+    script_code: str | None = None
+
+
+class AutomationRun(BaseModel):
+    id: str
+    automation_version_id: str
+    profile_id: str | None = None
+    status: AutomationRunStatus
+    started_at: datetime
+    ended_at: datetime | None = None
+    log_text: str | None = None
+    result_json: dict | None = None
+    error_message: str | None = None
+    triggered_by: AutomationTrigger
+    triggered_by_user_id: str | None = None
+
+
+class AutomationRunCreate(BaseModel):
+    """Payload to enqueue a manual run from the UI / API."""
+
+    profile_id: str | None = None
+
+
+class Schedule(BaseModel):
+    id: str
+    automation_id: str
+    profile_id: str | None = None
+    cron: str
+    timezone: str = "UTC"
+    enabled: bool = True
+    next_fire_at: datetime | None = None
+    last_fire_at: datetime | None = None
+    created_at: datetime
+
+
+class ScheduleCreate(BaseModel):
+    cron: str = Field(min_length=1)
+    profile_id: str | None = None
+    timezone: str = "UTC"
+    enabled: bool = True
+
+
+class ScheduleUpdate(BaseModel):
+    cron: str | None = Field(default=None, min_length=1)
+    enabled: bool | None = None
+    timezone: str | None = None
+    profile_id: str | None = None
