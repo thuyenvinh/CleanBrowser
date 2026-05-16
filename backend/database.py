@@ -175,6 +175,10 @@ def create_profile(
 
 
 def get_profile(profile_id: str) -> dict[str, Any] | None:
+    try:
+        uuid.UUID(str(profile_id))
+    except (ValueError, AttributeError, TypeError):
+        return None
     with get_db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
             cur.execute("SELECT * FROM profiles WHERE id = %s", (profile_id,))
@@ -208,6 +212,10 @@ def list_profiles() -> list[dict[str, Any]]:
 
 
 def update_profile(profile_id: str, **fields: Any) -> dict[str, Any] | None:
+    try:
+        uuid.UUID(str(profile_id))
+    except (ValueError, AttributeError, TypeError):
+        return None
     existing = get_profile(profile_id)
     if not existing:
         return None
@@ -261,6 +269,10 @@ def update_profile(profile_id: str, **fields: Any) -> dict[str, Any] | None:
 
 
 def delete_profile(profile_id: str) -> bool:
+    try:
+        uuid.UUID(str(profile_id))
+    except (ValueError, AttributeError, TypeError):
+        return False
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute("DELETE FROM profiles WHERE id = %s", (profile_id,))
