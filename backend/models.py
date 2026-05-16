@@ -739,3 +739,67 @@ class AiBuildResponse(BaseModel):
 
     dsl: dict
     configured: bool
+
+
+# ── Marketplace (Phase 6 task PPP) ───────────────────────────────────────────
+#
+# Public catalog + per-workspace install ledger. Schema lives in migration
+# ``0018_add_marketplace``; data layer in :mod:`backend.db_marketplace`;
+# HTTP routes in :mod:`backend.routers.marketplace`. See
+# ``docs/ARCHITECTURE`` §2.6 for the broader marketplace design (GemStore
+# / GPM-style automation app store).
+
+
+class MarketplaceApp(BaseModel):
+    """One row of the public ``marketplace_apps`` catalog.
+
+    ``dsl_json`` / ``script_code`` are intentionally omitted from the
+    list-payload schema — clients fetch the full row via
+    ``GET /api/marketplace/apps/{id}`` once the user clicks install.
+    """
+
+    id: str
+    slug: str
+    name: str
+    description: str | None = None
+    long_description: str | None = None
+    icon_url: str | None = None
+    category: str | None = None
+    kind: str
+    version: str
+    creator_name: str | None = None
+    creator_url: str | None = None
+    install_count: int
+    is_official: bool
+    is_public: bool
+    required_permissions: list[str]
+    created_at: datetime
+    updated_at: datetime
+
+
+class InstallRequest(BaseModel):
+    """Body of ``POST /api/marketplace/apps/{id}/install``.
+
+    ``workspace_id`` is optional — the router falls back to the caller's
+    oldest workspace when missing.
+    """
+
+    workspace_id: str | None = None
+
+
+class TenantAppInstall(BaseModel):
+    """One row of ``tenant_app_installs``.
+
+    Pinned to a workspace (not just a tenant) so seat-scoped installs
+    are possible in later phases. ``automation_id`` is nullable because
+    the FK is ``ON DELETE SET NULL`` — the user deleting their cloned
+    automation should not break the marketplace UI.
+    """
+
+    id: str
+    tenant_id: str
+    workspace_id: str
+    app_id: str
+    automation_id: str | None = None
+    installed_at: datetime
+    app_version: str | None = None

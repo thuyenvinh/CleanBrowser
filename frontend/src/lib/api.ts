@@ -26,6 +26,7 @@ export interface Profile {
   launch_args: string[];
   notes: string | null;
   region: string | null;
+  browser_type: string;
   user_data_dir: string;
   created_at: string;
   updated_at: string;
@@ -58,6 +59,7 @@ export interface ProfileCreateData {
   launch_args?: string[];
   notes?: string | null;
   region?: string | null;
+  browser_type?: string;
   tags?: { tag: string; color: string | null }[];
 }
 

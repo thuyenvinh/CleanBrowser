@@ -60,6 +60,7 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
   const [form, setForm] = useState<ProfileCreateData>({
     name: "",
     platform: "windows",
+    browser_type: "chromium",
     screen_width: 1920,
     screen_height: 1080,
     humanize: false,
@@ -108,6 +109,7 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
         launch_args: profile.launch_args ?? [],
         notes: profile.notes,
         region: profile.region,
+        browser_type: profile.browser_type,
         tags: profile.tags ?? [],
       });
     }
@@ -234,6 +236,17 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
                 <option value="windows">Windows</option>
                 <option value="macos">macOS</option>
                 <option value="linux">Linux</option>
+              </select>
+            </div>
+            <div>
+              <label className="label">Browser engine</label>
+              <select
+                className="input"
+                value={form.browser_type ?? "chromium"}
+                onChange={(e) => set("browser_type", e.target.value)}
+              >
+                <option value="chromium">Chromium (CloakBrowser — stealth)</option>
+                <option value="firefox">Firefox</option>
               </select>
             </div>
             <div>

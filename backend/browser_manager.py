@@ -259,26 +259,43 @@ class BrowserManager:
             if proxy:
                 _validate_proxy(proxy)
 
-            # Launch CloakBrowser on that display
-            # DISPLAY is passed via env kwarg to avoid process-wide os.environ mutation
-            context = await launch_persistent_context_async(
-                user_data_dir=profile["user_data_dir"],
-                headless=bool(profile.get("headless", False)),
-                proxy=proxy,
-                args=extra_args,
-                timezone=profile.get("timezone") or None,
-                locale=profile.get("locale") or None,
-                humanize=bool(profile.get("humanize", False)),
-                human_preset=profile.get("human_preset", "default"),
-                geoip=bool(profile.get("geoip", False)),
-                color_scheme=profile.get("color_scheme") or None,
-                user_agent=profile.get("user_agent") or None,
-                viewport={
-                    "width": profile.get("screen_width", 1920),
-                    "height": profile.get("screen_height", 1080) - 133,
-                },
-                env={**os.environ, "DISPLAY": f":{display}"},
-            )
+            # Phase 6 (task OOO) — dual-core dispatcher. Default is the
+            # CloakBrowser-patched Chromium (the historical path); Firefox
+            # is opt-in and bypasses CloakBrowser entirely because the
+            # fingerprint patches are Chromium-specific (they live in the
+            # Chromium fork's renderer). Firefox therefore launches with
+            # only the *generic* knobs Playwright's Firefox backend
+            # supports — viewport, locale, timezone, user_agent, proxy —
+            # and skips fingerprint-seed / GPU / hardware-concurrency.
+            #
+            # DISPLAY is passed via env kwarg to avoid process-wide
+            # os.environ mutation.
+            browser_type = (profile.get("browser_type") or "chromium").lower()
+            if browser_type == "firefox":
+                context = await self._launch_firefox(
+                    profile=profile,
+                    proxy=proxy,
+                    display=display,
+                )
+            else:
+                context = await launch_persistent_context_async(
+                    user_data_dir=profile["user_data_dir"],
+                    headless=bool(profile.get("headless", False)),
+                    proxy=proxy,
+                    args=extra_args,
+                    timezone=profile.get("timezone") or None,
+                    locale=profile.get("locale") or None,
+                    humanize=bool(profile.get("humanize", False)),
+                    human_preset=profile.get("human_preset", "default"),
+                    geoip=bool(profile.get("geoip", False)),
+                    color_scheme=profile.get("color_scheme") or None,
+                    user_agent=profile.get("user_agent") or None,
+                    viewport={
+                        "width": profile.get("screen_width", 1920),
+                        "height": profile.get("screen_height", 1080) - 133,
+                    },
+                    env={**os.environ, "DISPLAY": f":{display}"},
+                )
 
             # Inject clipboard listener: captures copied text on every page
             # so the GET /clipboard endpoint can read it via page.evaluate()
@@ -525,6 +542,64 @@ class BrowserManager:
                 except OSError:
                     continue
         raise ValueError("No free CDP ports available in range %d-%d" % (BASE_CDP_PORT, BASE_CDP_PORT + CDP_PORT_RANGE - 1))
+
+    async def _launch_firefox(
+        self,
+        profile: dict[str, Any],
+        proxy: str | None,
+        display: int,
+    ) -> Any:
+        """Launch a stock Playwright Firefox persistent context.
+
+        Phase 6 (task OOO) phase 1: Firefox is the *secondary* engine and
+        ships without CloakBrowser's fingerprint patches — there is no
+        Firefox build of those patches today, and the value of the option
+        is precisely that the detection signal differs from Chromium's.
+
+        Imports Playwright lazily so that (a) the CloakBrowser-only
+        Docker image (no firefox binary installed) still imports
+        ``browser_manager`` cleanly, and (b) a missing Firefox binary
+        produces an actionable error at launch time instead of a
+        cryptic ImportError at startup. The fix is to run
+        ``playwright install firefox`` inside the container.
+        """
+        try:
+            from playwright.async_api import async_playwright
+        except ImportError as exc:  # pragma: no cover — playwright is a hard dep
+            raise RuntimeError(
+                "Firefox engine requires the 'playwright' package"
+            ) from exc
+
+        pw = await async_playwright().start()
+        try:
+            context = await pw.firefox.launch_persistent_context(
+                user_data_dir=profile["user_data_dir"],
+                headless=bool(profile.get("headless", False)),
+                proxy={"server": proxy} if proxy else None,
+                timezone_id=profile.get("timezone") or None,
+                locale=profile.get("locale") or None,
+                color_scheme=profile.get("color_scheme") or None,
+                user_agent=profile.get("user_agent") or None,
+                viewport={
+                    "width": profile.get("screen_width", 1920),
+                    "height": profile.get("screen_height", 1080) - 133,
+                },
+                env={**os.environ, "DISPLAY": f":{display}"},
+            )
+        except Exception as exc:
+            # Most common failure: ``playwright install firefox`` was
+            # never run inside this image. Re-raise with a hint so the
+            # operator doesn't have to grep Playwright's stderr.
+            await pw.stop()
+            msg = str(exc)
+            if "Executable doesn't exist" in msg or "firefox" in msg.lower():
+                raise RuntimeError(
+                    "Firefox engine not installed — run "
+                    "'playwright install firefox' inside the container "
+                    f"(underlying error: {exc})"
+                ) from exc
+            raise
+        return context
 
     def _build_fingerprint_args(self, profile: dict[str, Any]) -> list[str]:
         """Build extra Chromium args from profile fingerprint settings."""

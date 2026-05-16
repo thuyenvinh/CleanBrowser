@@ -212,6 +212,10 @@ def create_profile(
     user_data_dir = str(DATA_DIR / "profiles" / profile_id)
     now = _now()
     tags = fields.pop("tags", None) or []
+    # Phase 6 (task OOO) — engine selector. Falls back to 'chromium' so any
+    # caller that pre-dates the column (legacy scripts, older API clients)
+    # keeps getting the historical CloakBrowser-patched build.
+    browser_type = fields.get("browser_type") or "chromium"
 
     with get_db() as conn:
         with conn.cursor() as cur:
@@ -221,9 +225,10 @@ def create_profile(
                     user_agent, screen_width, screen_height, gpu_vendor, gpu_renderer,
                     hardware_concurrency, humanize, human_preset, headless, geoip,
                     clipboard_sync, auto_launch, color_scheme, launch_args, notes,
-                    user_data_dir, workspace_id, proxy_id, region, created_at, updated_at
+                    user_data_dir, workspace_id, proxy_id, region, browser_type,
+                    created_at, updated_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s)""",
+                          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     profile_id, name, seed,
                     fields.get("proxy"),
@@ -245,7 +250,8 @@ def create_profile(
                     fields.get("color_scheme"),
                     json.dumps(fields.get("launch_args") or []),
                     fields.get("notes"),
-                    user_data_dir, workspace_id, proxy_id, region, now, now,
+                    user_data_dir, workspace_id, proxy_id, region, browser_type,
+                    now, now,
                 ),
             )
             for t in tags:
@@ -342,7 +348,7 @@ def update_profile(profile_id: str, **fields: Any) -> dict[str, Any] | None:
         "user_agent", "screen_width", "screen_height", "gpu_vendor", "gpu_renderer",
         "hardware_concurrency", "humanize", "human_preset", "headless", "geoip",
         "clipboard_sync", "auto_launch", "color_scheme", "launch_args", "notes",
-        "workspace_id", "proxy_id", "region",
+        "workspace_id", "proxy_id", "region", "browser_type",
     ):
         if col in fields:
             if col == "launch_args":
