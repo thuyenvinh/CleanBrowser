@@ -223,10 +223,36 @@ class EmailLoginRequest(BaseModel):
 
     Named distinctly from the legacy token-based ``LoginRequest`` so that both
     can coexist while Wave 2 migrates the auth router.
+
+    ``code`` is the optional TOTP code, supplied on the second leg of an MFA
+    login challenge. Absent for users without MFA enabled, or for the first
+    request from an MFA user (server responds with ``{mfa_required: true}``).
     """
 
     email: EmailStr
     password: str
+    code: str | None = None
+
+
+class MfaSetupResponse(BaseModel):
+    """Returned from ``POST /api/auth/mfa/setup``.
+
+    The ``secret`` is NOT yet persisted — the client must echo it back to
+    ``/mfa/enable`` together with a valid TOTP code to confirm enrolment.
+    """
+
+    secret: str
+    qr_provisioning_uri: str
+
+
+class MfaEnableRequest(BaseModel):
+    secret: str
+    code: str
+
+
+class MfaDisableRequest(BaseModel):
+    password: str
+    code: str
 
 
 class ApiKeyCreate(BaseModel):

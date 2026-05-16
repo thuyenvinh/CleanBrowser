@@ -31,7 +31,16 @@ from pydantic import ValidationError
 from .. import db_auth
 from ..auth_tokens import JWT_LIFETIME_SECONDS, encode_session
 from ..dependencies import SESSION_COOKIE, _is_https, get_current_user
-from ..models import EmailLoginRequest, LoginRequest, SignupRequest, UserPublic, Workspace
+from ..models import (
+    EmailLoginRequest,
+    LoginRequest,
+    MfaDisableRequest,
+    MfaEnableRequest,
+    MfaSetupResponse,
+    SignupRequest,
+    UserPublic,
+    Workspace,
+)
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -203,6 +212,16 @@ async def auth_login(request: Request, response: Response):
         if user.get("status") != "active":
             raise HTTPException(status_code=401, detail="invalid credentials")
 
+        # MFA challenge: if the user has a stored secret, require a valid OTP
+        # before issuing the session cookie. We intentionally do NOT cap retries
+        # here — the TOTP window itself + rate limiting upstream is the defence.
+        if user.get("mfa_secret"):
+            if not body.code:
+                # First leg: client doesn't know MFA is on. Tell them, no cookie.
+                return {"mfa_required": True}
+            if not db_auth.verify_totp(user["id"], body.code):
+                raise HTTPException(status_code=401, detail="invalid mfa code")
+
         token = encode_session(user["id"], user["tenant_id"])
         _set_session_cookie(response, token)
         return _auth_payload(user)
@@ -280,3 +299,69 @@ async def auth_logout(request: Request, response: Response):
 @router.get("/me")
 async def auth_me(user: dict[str, Any] = Depends(get_current_user)):
     return _auth_payload(user)
+
+
+# ---------------------------------------------------------------------------
+# MFA (TOTP) — optional second factor
+#
+# Flow:
+#   1. Client POST /mfa/setup → server returns a freshly generated secret +
+#      otpauth:// provisioning URI. Nothing is persisted yet.
+#   2. Client renders the QR code, user scans it with their authenticator,
+#      enters the first 6-digit code.
+#   3. Client POST /mfa/enable with {secret, code}. If the code validates
+#      against the secret, the secret is persisted on the user row.
+#   4. From the next /login onward, the user must supply ``code`` to complete
+#      authentication. See the JSON branch of ``auth_login`` above.
+#
+# We intentionally avoid server-side session storage of the in-progress secret:
+# bouncing it through the client is the standard pattern and means /setup is
+# idempotent / stateless. The secret only becomes authoritative once /enable
+# accepts a proof-of-possession code.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/mfa/setup", response_model=MfaSetupResponse)
+async def auth_mfa_setup(user: dict[str, Any] = Depends(get_current_user)):
+    import pyotp
+
+    secret = pyotp.random_base32()
+    uri = pyotp.TOTP(secret).provisioning_uri(
+        name=user["email"], issuer_name="CleanBrowser"
+    )
+    return MfaSetupResponse(secret=secret, qr_provisioning_uri=uri)
+
+
+@router.post("/mfa/enable")
+async def auth_mfa_enable(
+    body: MfaEnableRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    import pyotp
+
+    try:
+        ok = pyotp.TOTP(body.secret).verify(body.code, valid_window=1)
+    except Exception:
+        ok = False
+    if not ok:
+        raise HTTPException(status_code=400, detail="invalid mfa code")
+
+    db_auth.enable_mfa(user["id"], body.secret)
+    return {"enabled": True}
+
+
+@router.post("/mfa/disable")
+async def auth_mfa_disable(
+    body: MfaDisableRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    # Double-check: require both the current password AND a valid OTP. Either
+    # alone would lower the bar for an attacker who has only one factor (e.g.
+    # a hijacked session + leaked password, or stolen device + session).
+    if not db_auth.verify_password(body.password, user["password_hash"]):
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    if not db_auth.verify_totp(user["id"], body.code):
+        raise HTTPException(status_code=401, detail="invalid mfa code")
+
+    db_auth.disable_mfa(user["id"])
+    return {"enabled": False}

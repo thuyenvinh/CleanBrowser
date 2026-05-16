@@ -421,6 +421,74 @@ def revoke_api_key(api_key_id: str) -> bool:
 # ---------------------------------------------------------------------------
 
 
+# ---------------------------------------------------------------------------
+# MFA (TOTP)
+# ---------------------------------------------------------------------------
+
+
+def enable_mfa(user_id: str, secret: str) -> None:
+    """Persist a TOTP secret for ``user_id``, marking MFA as enabled.
+
+    Caller is responsible for verifying the secret against a code first.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE users
+                   SET mfa_secret = %s, updated_at = now()
+                   WHERE id = %s""",
+                (secret, user_id),
+            )
+        conn.commit()
+
+
+def disable_mfa(user_id: str) -> None:
+    """Clear the TOTP secret for ``user_id``."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE users
+                   SET mfa_secret = NULL, updated_at = now()
+                   WHERE id = %s""",
+                (user_id,),
+            )
+        conn.commit()
+
+
+def is_mfa_enabled(user_id: str) -> bool:
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT mfa_secret FROM users WHERE id = %s", (user_id,)
+            )
+            row = cur.fetchone()
+            return bool(row and row[0])
+
+
+def verify_totp(user_id: str, code: str) -> bool:
+    """Verify ``code`` against the user's stored TOTP secret.
+
+    Returns ``False`` if MFA is not enabled, the code is malformed, or the
+    code does not validate within a one-step window.
+    """
+    if not code:
+        return False
+    import pyotp
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT mfa_secret FROM users WHERE id = %s", (user_id,)
+            )
+            row = cur.fetchone()
+    if not row or not row[0]:
+        return False
+    try:
+        return bool(pyotp.TOTP(row[0]).verify(code, valid_window=1))
+    except Exception:
+        return False
+
+
 def signup(
     email: str,
     password: str,
