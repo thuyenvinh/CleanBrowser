@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { Lock, PanelLeftClose, PanelLeft } from "lucide-react";
+import { Lock, PanelLeftClose, PanelLeft, Server, Globe } from "lucide-react";
 import { useProfiles } from "./hooks/useProfiles";
 import { useAuth } from "./hooks/useAuth";
 import { api, setOnUnauthorized, type ProfileCreateData } from "./lib/api";
@@ -11,10 +11,12 @@ import { StatusIndicator } from "./components/StatusIndicator";
 import { LoginPage } from "./components/LoginPage";
 import { SignupPage } from "./components/SignupPage";
 import { WorkspaceSelector } from "./components/WorkspaceSelector";
+import { ProxyPage } from "./components/ProxyPage";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
 type AuthView = "login" | "signup";
+type Tab = "profiles" | "proxies";
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>("checking");
@@ -138,6 +140,7 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("empty");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [tab, setTab] = useState<Tab>("profiles");
 
   const selected = profiles.find((p) => p.id === selectedId) ?? null;
 
@@ -198,8 +201,8 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
 
   return (
     <div className="h-screen flex">
-      {/* Sidebar */}
-      {sidebarOpen && (
+      {/* Profile sidebar (only on profiles tab) */}
+      {tab === "profiles" && sidebarOpen && (
         <div className="w-64 border-r border-border bg-surface-1 flex-shrink-0">
           <ProfileList
             profiles={profiles}
@@ -231,7 +234,25 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
             )}
           </div>
           <div className="flex items-center gap-2">
-            {selected && (
+            <div className="flex items-center gap-1 mr-2">
+              <button
+                onClick={() => setTab("profiles")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "profiles" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Profiles"
+              >
+                <Server className="h-3.5 w-3.5" />
+                Profiles
+              </button>
+              <button
+                onClick={() => setTab("proxies")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "proxies" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Proxies"
+              >
+                <Globe className="h-3.5 w-3.5" />
+                Proxies
+              </button>
+            </div>
+            {tab === "profiles" && selected && (
               <LaunchButton
                 status={selected.status}
                 onLaunch={handleLaunch}
@@ -264,7 +285,10 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto overscroll-contain">
-          {view === "empty" && (
+          {tab === "proxies" && (
+            <ProxyPage currentWorkspaceId={currentWorkspaceId} />
+          )}
+          {tab === "profiles" && view === "empty" && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
                 <p className="text-gray-500 text-sm">Select a profile or create a new one</p>
@@ -272,7 +296,7 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
             </div>
           )}
 
-          {view === "create" && (
+          {tab === "profiles" && view === "create" && (
             <ProfileForm
               profile={null}
               onSave={handleCreate}
@@ -280,7 +304,7 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
             />
           )}
 
-          {view === "edit" && selected && (
+          {tab === "profiles" && view === "edit" && selected && (
             <ProfileForm
               profile={selected}
               onSave={handleUpdate}
@@ -292,7 +316,7 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
             />
           )}
 
-          {view === "view" && selected && selected.status === "running" && (
+          {tab === "profiles" && view === "view" && selected && selected.status === "running" && (
             <ProfileViewer
               key={selected.id}
               profileId={selected.id}
