@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import pytest
 
-from proxy_providers import (
+from backend.proxy_providers import (
     ProxyInfo,
     ResolvedProxy,
     get_provider,
