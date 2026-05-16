@@ -1,5 +1,5 @@
 import { useState } from "react";
-import { Loader2, Pencil, Play, Plus, Search, Trash2 } from "lucide-react";
+import { Loader2, Pencil, Play, Plus, Search, Trash2, Upload } from "lucide-react";
 import type { Proxy, ProxyStatus } from "../lib/proxy";
 
 interface ProxyListProps {
@@ -8,6 +8,7 @@ interface ProxyListProps {
   testingId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
+  onImport?: () => void;
   onTest: (id: string) => void;
   onDelete: (id: string) => void;
 }
@@ -51,6 +52,7 @@ export function ProxyList({
   testingId,
   onSelect,
   onNew,
+  onImport,
   onTest,
   onDelete,
 }: ProxyListProps) {
@@ -72,13 +74,25 @@ export function ProxyList({
             {proxies.length} {proxies.length === 1 ? "proxy" : "proxies"}
           </p>
         </div>
-        <button
-          onClick={onNew}
-          className="btn-primary flex items-center gap-1.5"
-        >
-          <Plus className="h-3.5 w-3.5" />
-          <span>New Proxy</span>
-        </button>
+        <div className="flex items-center gap-1.5">
+          {onImport && (
+            <button
+              onClick={onImport}
+              className="btn-secondary flex items-center gap-1.5"
+              title="Bulk import from CSV"
+            >
+              <Upload className="h-3.5 w-3.5" />
+              <span>Import</span>
+            </button>
+          )}
+          <button
+            onClick={onNew}
+            className="btn-primary flex items-center gap-1.5"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            <span>New Proxy</span>
+          </button>
+        </div>
       </div>
 
       <div className="px-4 pt-3">

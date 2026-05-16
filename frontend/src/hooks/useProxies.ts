@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   proxy as proxyApi,
+  type BulkResult,
   type Proxy,
   type ProxyCreateInput,
   type ProxyUpdateInput,
@@ -108,12 +109,31 @@ export function useProxies(currentWorkspaceId?: string | null) {
     [],
   );
 
+  const bulkCreate = useCallback(
+    async (inputs: ProxyCreateInput[]): Promise<BulkResult | undefined> => {
+      try {
+        const result = await proxyApi.bulkCreate(inputs);
+        if (result.proxies.length > 0) {
+          // Prepend the successfully imported rows so users see them at the
+          // top of the list immediately (same UX as single-row create).
+          setProxies((prev) => [...result.proxies, ...prev]);
+        }
+        setError(null);
+        return result;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to import proxies");
+      }
+    },
+    [],
+  );
+
   return {
     proxies,
     loading,
     error,
     refresh,
     create,
+    bulkCreate,
     update,
     delete: remove,
     test,

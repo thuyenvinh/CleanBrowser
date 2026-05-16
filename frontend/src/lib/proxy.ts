@@ -91,10 +91,21 @@ async function request<T>(path: string, options: RequestOptions = {}): Promise<T
   return JSON.parse(text) as T;
 }
 
+export interface BulkResult {
+  created: number;
+  failed: { index: number; error: string }[];
+  proxies: Proxy[];
+}
+
 export const proxy = {
   list: () => request<Proxy[]>("/api/proxies"),
   create: (input: ProxyCreateInput) =>
     request<Proxy>("/api/proxies", { method: "POST", body: input }),
+  bulkCreate: (proxies: ProxyCreateInput[]) =>
+    request<BulkResult>("/api/proxies/bulk", {
+      method: "POST",
+      body: { proxies },
+    }),
   get: (id: string) => request<Proxy>(`/api/proxies/${id}`),
   update: (id: string, input: ProxyUpdateInput) =>
     request<Proxy>(`/api/proxies/${id}`, { method: "PUT", body: input }),

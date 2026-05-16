@@ -34,7 +34,13 @@ from ..dependencies import (
     check_role_for_workspace,
     get_current_user,
 )
-from ..models import Proxy, ProxyCreate, ProxyUpdate
+from ..models import (
+    Proxy,
+    ProxyBulkCreate,
+    ProxyBulkResult,
+    ProxyCreate,
+    ProxyUpdate,
+)
 
 logger = logging.getLogger("cloakbrowser.proxy")
 
@@ -132,6 +138,43 @@ async def create_proxy(
         # Bad type / port — surface as 400.
         raise HTTPException(status_code=400, detail=str(exc))
     return Proxy(**row)
+
+
+@router.post("/bulk", response_model=ProxyBulkResult)
+async def bulk_create_proxies(
+    req: ProxyBulkCreate,
+    request: Request,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    """Best-effort bulk import of proxies from CSV / paste UIs.
+
+    Each row is inserted independently; a failure on row *i* only excludes
+    that row from the result and is reported via ``failed=[{index, error}]``.
+    There is no overall rollback — partial success is the expected outcome
+    when users paste mixed input from spreadsheets / provider dashboards.
+    The 500-entry cap is enforced by :class:`ProxyBulkCreate` (422 otherwise).
+    """
+    ws_id = _resolve_workspace_for_request(request, user, ROLE_LEVEL["editor"])
+
+    created_rows: list[Proxy] = []
+    failed: list[dict] = []
+    for idx, item in enumerate(req.proxies):
+        try:
+            row = db_proxy.create_proxy(workspace_id=ws_id, **item.model_dump())
+            created_rows.append(Proxy(**row))
+        except ValueError as exc:
+            failed.append({"index": idx, "error": str(exc)})
+        except Exception as exc:  # DB / unexpected — still best-effort
+            logger.exception("bulk create_proxy failed at index %d", idx)
+            failed.append(
+                {"index": idx, "error": str(exc) or exc.__class__.__name__}
+            )
+
+    return ProxyBulkResult(
+        created=len(created_rows),
+        failed=failed,
+        proxies=created_rows,
+    )
 
 
 @router.get("/{proxy_id}", response_model=Proxy)

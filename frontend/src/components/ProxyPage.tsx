@@ -2,6 +2,7 @@ import { useCallback, useState } from "react";
 import { useProxies } from "../hooks/useProxies";
 import { ProxyList } from "./ProxyList";
 import { ProxyForm } from "./ProxyForm";
+import { ProxyImportDialog } from "./ProxyImportDialog";
 import type { Proxy, ProxyCreateInput, ProxyUpdateInput } from "../lib/proxy";
 
 interface ProxyPageProps {
@@ -9,11 +10,20 @@ interface ProxyPageProps {
 }
 
 export function ProxyPage({ currentWorkspaceId }: ProxyPageProps) {
-  const { proxies, loading, error, create, update, delete: remove, test } =
-    useProxies(currentWorkspaceId);
+  const {
+    proxies,
+    loading,
+    error,
+    create,
+    bulkCreate,
+    update,
+    delete: remove,
+    test,
+  } = useProxies(currentWorkspaceId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mode, setMode] = useState<"empty" | "create" | "edit">("empty");
   const [testingId, setTestingId] = useState<string | null>(null);
+  const [importOpen, setImportOpen] = useState(false);
 
   const selected: Proxy | null = proxies.find((p) => p.id === selectedId) ?? null;
 
@@ -83,9 +93,21 @@ export function ProxyPage({ currentWorkspaceId }: ProxyPageProps) {
           testingId={testingId}
           onSelect={handleSelect}
           onNew={handleNew}
+          onImport={() => setImportOpen(true)}
           onTest={handleTest}
           onDelete={(id) => remove(id)}
         />
+        {importOpen && (
+          <ProxyImportDialog
+            onClose={() => setImportOpen(false)}
+            onImport={async (inputs) => {
+              const result = await bulkCreate(inputs);
+              return result
+                ? { created: result.created, failed: result.failed }
+                : undefined;
+            }}
+          />
+        )}
       </div>
       <div className="flex-1 overflow-y-auto">
         {error && (

@@ -352,3 +352,28 @@ class ProxyUpdate(BaseModel):
     rotation_url: str | None = None
     sticky_session: str | None = None
     country_code: str | None = None
+
+
+class ProxyBulkCreate(BaseModel):
+    """Payload for ``POST /api/proxies/bulk``.
+
+    Capped at 500 entries per request — anything larger should be split by
+    the client. Each entry is validated independently as a :class:`ProxyCreate`
+    so per-row errors can be surfaced without rejecting the whole batch.
+    """
+
+    proxies: list[ProxyCreate] = Field(min_length=1, max_length=500)
+
+
+class ProxyBulkResult(BaseModel):
+    """Per-row outcome of a bulk import call.
+
+    ``failed`` is a list of ``{index, error}`` records pointing back at the
+    request payload, so the client can highlight problematic rows in its
+    paste/import dialog. ``proxies`` contains only the successfully inserted
+    rows (already sanitised, no ``password_enc``).
+    """
+
+    created: int
+    failed: list[dict]
+    proxies: list[Proxy]
