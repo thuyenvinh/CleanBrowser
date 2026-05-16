@@ -36,6 +36,7 @@ from .routers import auth as auth_router
 from .routers import cdp as cdp_router
 from .routers import clipboard as clipboard_router
 from .routers import profiles as profiles_router
+from .routers import proxies as proxies_router
 from .routers import system as system_router
 from .routers import vnc as vnc_router
 from .routers import workspaces as workspaces_router
@@ -155,6 +156,7 @@ app.add_middleware(AuthMiddleware)
 app.include_router(auth_router.router)
 app.include_router(workspaces_router.router)
 app.include_router(profiles_router.router)
+app.include_router(proxies_router.router)
 app.include_router(vnc_router.router)
 app.include_router(cdp_router.router)
 app.include_router(clipboard_router.router)
