@@ -153,6 +153,11 @@ def get_optional_user(request: Request) -> dict[str, Any] | None:
     # stale token must not grant access.
     if payload.get("tid") and payload["tid"] != user.get("tenant_id"):
         return None
+    # Expose the user dict on request.state so downstream middleware (notably
+    # AuditMiddleware) can attribute actions to the authenticated actor. We
+    # only set this when we have a real user — unauthenticated requests leave
+    # the attribute unset so middleware can fall back to ``getattr(...)``.
+    request.state.user = user
     return user
 
 

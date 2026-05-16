@@ -31,6 +31,7 @@ from .dependencies import (
     _is_https,  # re-export for backward compatibility
     browser_mgr,
 )
+from .middleware_audit import AuditMiddleware
 from .routers import auth as auth_router
 from .routers import cdp as cdp_router
 from .routers import clipboard as clipboard_router
@@ -141,6 +142,11 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CloakBrowser Manager", lifespan=lifespan)
+# Starlette applies middleware in reverse registration order (last-registered
+# is outermost). We want AuthMiddleware to run BEFORE AuditMiddleware so the
+# auth dependency has a chance to populate ``request.state.user`` that
+# AuditMiddleware reads. Register Audit FIRST so Auth ends up outermost.
+app.add_middleware(AuditMiddleware)
 app.add_middleware(AuthMiddleware)
 
 # Mount domain routers — order doesn't affect routing, but we list them
