@@ -267,3 +267,140 @@ def delete_profile(profile_id: str) -> bool:
             rowcount = cur.rowcount
         conn.commit()
         return rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# profile_sessions
+#
+# Persistent record of every browser launch. Replaces ``BrowserManager.running``
+# as the source of truth for "is profile X currently active?" — the in-memory
+# dict is now just a cache for process handles. See docs/ARCHITECTURE §2.2.
+# ---------------------------------------------------------------------------
+
+
+def _row_to_session(row: dict[str, Any]) -> dict[str, Any]:
+    session = dict(row)
+    if isinstance(session.get("id"), uuid.UUID):
+        session["id"] = str(session["id"])
+    if isinstance(session.get("profile_id"), uuid.UUID):
+        session["profile_id"] = str(session["profile_id"])
+    for ts_col in ("started_at", "ended_at"):
+        v = session.get(ts_col)
+        if isinstance(v, datetime.datetime):
+            session[ts_col] = v.isoformat()
+    return session
+
+
+def create_session(
+    profile_id: str,
+    display_num: int | None = None,
+    ws_port: int | None = None,
+    cdp_port: int | None = None,
+    worker_id: str = "local",
+) -> dict[str, Any]:
+    """Insert a new session row with status='starting'.
+
+    The partial unique index ``ux_profile_sessions_one_active`` raises
+    ``psycopg2.errors.UniqueViolation`` if another active session for this
+    profile already exists.
+    """
+    session_id = str(uuid.uuid4())
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO profile_sessions (
+                    id, profile_id, worker_id, status,
+                    display_num, ws_port, cdp_port
+                ) VALUES (%s, %s, %s, 'starting', %s, %s, %s)
+                RETURNING *""",
+                (session_id, profile_id, worker_id, display_num, ws_port, cdp_port),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_session(row)
+
+
+def mark_session_running(session_id: str) -> None:
+    """Transition a session from 'starting' to 'running'."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE profile_sessions SET status = 'running' WHERE id = %s",
+                (session_id,),
+            )
+        conn.commit()
+
+
+def end_session(
+    session_id: str,
+    status: str = "stopped",
+    error_message: str | None = None,
+) -> None:
+    """Mark a session as ended. ``status`` should be 'stopped' or 'crashed'.
+
+    Idempotent — repeated calls on an already-ended session are a no-op
+    (``ended_at`` is preserved).
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE profile_sessions
+                   SET status = %s,
+                       ended_at = now(),
+                       error_message = COALESCE(%s, error_message)
+                   WHERE id = %s AND ended_at IS NULL""",
+                (status, error_message, session_id),
+            )
+        conn.commit()
+
+
+def get_active_session_for_profile(profile_id: str) -> dict[str, Any] | None:
+    """Return the current active (``ended_at IS NULL``) session for a profile."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM profile_sessions
+                   WHERE profile_id = %s AND ended_at IS NULL
+                   LIMIT 1""",
+                (profile_id,),
+            )
+            row = cur.fetchone()
+            return _row_to_session(row) if row else None
+
+
+def list_active_sessions() -> list[dict[str, Any]]:
+    """List every session with ``ended_at IS NULL``. Used for startup recovery."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM profile_sessions
+                   WHERE ended_at IS NULL
+                   ORDER BY started_at ASC"""
+            )
+            return [_row_to_session(r) for r in cur.fetchall()]
+
+
+def cleanup_stale_sessions() -> int:
+    """Mark every active session as crashed.
+
+    Called on container/server startup: any session row left active across a
+    restart is by definition orphaned, because the process that owned it has
+    been killed.
+
+    Returns the number of rows updated.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE profile_sessions
+                   SET status = 'crashed',
+                       ended_at = now(),
+                       error_message = COALESCE(
+                           error_message,
+                           'process killed by server restart'
+                       )
+                   WHERE ended_at IS NULL"""
+            )
+            count = cur.rowcount
+        conn.commit()
+        return count

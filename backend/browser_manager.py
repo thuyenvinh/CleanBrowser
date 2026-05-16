@@ -153,6 +153,7 @@ class RunningProfile:
     display: int
     ws_port: int
     cdp_port: int
+    session_id: str | None = None  # row id in profile_sessions; None pre-DB-write
 
 
 class BrowserManager:
@@ -166,11 +167,19 @@ class BrowserManager:
 
     async def launch(self, profile: dict[str, Any]) -> RunningProfile:
         """Launch a browser instance for the given profile."""
+        from . import database as db
+
         profile_id = profile["id"]
 
         async with self._lock:
             if profile_id in self.running or profile_id in self._launching:
                 raise RuntimeError(f"Profile {profile_id} is already running")
+            # DB is source of truth: refuse if another worker/process already owns
+            # a live session for this profile (Phase 3 multi-worker safety).
+            if db.get_active_session_for_profile(profile_id) is not None:
+                raise RuntimeError(
+                    f"Profile {profile_id} has an active session in another worker"
+                )
             self._launching.add(profile_id)
 
         display, ws_port = await self.vnc.allocate()
@@ -182,6 +191,23 @@ class BrowserManager:
                 self._launching.discard(profile_id)
             await self.vnc.stop_vnc(display)
             raise
+
+        # Persist 'starting' session BEFORE spawning Xvnc/Chromium so that a
+        # crash mid-launch still leaves a traceable row (cleaned up by
+        # cleanup_stale_sessions on next restart).
+        try:
+            session = db.create_session(
+                profile_id=profile_id,
+                display_num=display,
+                ws_port=ws_port,
+                cdp_port=cdp_port,
+            )
+        except Exception:
+            async with self._lock:
+                self._launching.discard(profile_id)
+            await self.vnc.stop_vnc(display)
+            raise
+        session_id = session["id"]
 
         # Clean stale Chromium lock files (left by previous container crashes)
         user_data_dir = Path(profile["user_data_dir"])
@@ -262,6 +288,7 @@ class BrowserManager:
                 display=display,
                 ws_port=ws_port,
                 cdp_port=cdp_port,
+                session_id=session_id,
             )
 
             # Auto-cleanup if browser crashes or user closes Chrome via VNC
@@ -269,34 +296,60 @@ class BrowserManager:
                 self._on_browser_closed(profile_id)
             ))
 
+            db.mark_session_running(session_id)
+
             async with self._lock:
                 self.running[profile_id] = running
                 self._launching.discard(profile_id)
 
             logger.info(
-                "Launched profile %s on display :%d (ws_port=%d, cdp_port=%d)",
-                profile_id, display, ws_port, cdp_port,
+                "Launched profile %s on display :%d (ws_port=%d, cdp_port=%d, session=%s)",
+                profile_id, display, ws_port, cdp_port, session_id,
             )
 
             return running
 
-        except BaseException:
+        except BaseException as exc:
             async with self._lock:
                 self._launching.discard(profile_id)
             await self.vnc.stop_vnc(display)
+            try:
+                db.end_session(
+                    session_id,
+                    status="crashed",
+                    error_message=f"launch failed: {exc!r}"[:1024],
+                )
+            except Exception as db_exc:
+                logger.warning(
+                    "Failed to mark session %s crashed: %s", session_id, db_exc
+                )
             raise
 
     async def _on_browser_closed(self, profile_id: str):
         """Called when browser exits (crash, user closed via VNC, or stop())."""
+        from . import database as db
+
         async with self._lock:
             running = self.running.pop(profile_id, None)
 
         if running:
             logger.info("Browser closed for profile %s, cleaning up", profile_id)
             await self.vnc.stop_vnc(running.display)
+            if running.session_id:
+                # end_session is idempotent: if stop() already marked this as
+                # 'stopped', the WHERE ended_at IS NULL clause makes this a no-op.
+                try:
+                    db.end_session(running.session_id, status="crashed")
+                except Exception as exc:
+                    logger.warning(
+                        "Failed to end session %s on close: %s",
+                        running.session_id, exc,
+                    )
 
     async def stop(self, profile_id: str):
         """Stop a running browser instance."""
+        from . import database as db
+
         # Pop before close so _on_browser_closed() finds nothing to clean up
         async with self._lock:
             running = self.running.pop(profile_id, None)
@@ -312,6 +365,15 @@ class BrowserManager:
             logger.warning("Error closing context for %s: %s", profile_id, exc)
 
         await self.vnc.stop_vnc(running.display)
+
+        if running.session_id:
+            try:
+                db.end_session(running.session_id, status="stopped")
+            except Exception as exc:
+                logger.warning(
+                    "Failed to end session %s on stop: %s",
+                    running.session_id, exc,
+                )
 
     def get_status(self, profile_id: str) -> dict[str, Any]:
         """Get running status for a profile."""
@@ -336,8 +398,22 @@ class BrowserManager:
         await self.vnc.cleanup_all()
 
     async def cleanup_stale(self):
-        """Kill orphan processes from previous container runs."""
+        """Kill orphan processes from previous container runs.
+
+        Also marks any ``profile_sessions`` rows left active across a restart as
+        'crashed' — those processes are by definition dead, so the DB must
+        agree before ``auto_launch_all`` tries to re-launch them (otherwise the
+        unique-active-session index would reject the new launch).
+        """
+        from . import database as db
+
         await self.vnc.cleanup_stale()
+        try:
+            stale = db.cleanup_stale_sessions()
+            if stale:
+                logger.info("Marked %d stale session(s) as crashed", stale)
+        except Exception as exc:
+            logger.warning("cleanup_stale_sessions failed: %s", exc)
 
     async def auto_launch_all(self):
         """Launch all profiles with auto_launch=True. Called on startup."""
