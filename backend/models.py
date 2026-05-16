@@ -543,3 +543,30 @@ class OAuthProvidersStatus(BaseModel):
 
     google: bool = False
     github: bool = False
+
+
+# ---------------------------------------------------------------------------
+# Phase 3 cloud-sync models.
+#
+# Surface for the ``profile_versions`` table from
+# ``docs/ARCHITECTURE`` §2.7; rows produced by :mod:`backend.db_versions`.
+# Not yet wired into any router or into ``browser_manager`` — the launch
+# flow that creates snapshots lands in agent BBB's task and the REST
+# surface lands in a later wave. ``storage_key`` is the opaque object key
+# in S3 / MinIO / the local dev fallback (see :mod:`backend.storage`).
+# ---------------------------------------------------------------------------
+
+
+class ProfileVersion(BaseModel):
+    """One snapshot row indexed by ``backend.db_versions``."""
+
+    id: str
+    profile_id: str
+    version: int
+    storage_key: str
+    size_bytes: int | None = None
+    sha256: str | None = None
+    created_at: datetime
+    created_by_user_id: str | None = None
+    created_by_session_id: str | None = None
+    notes: str | None = None
