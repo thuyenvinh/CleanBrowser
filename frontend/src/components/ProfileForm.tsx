@@ -1,6 +1,7 @@
 import { Save, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Profile, ProfileCreateData } from "../lib/api";
+import { ProfileVersionHistory } from "./ProfileVersionHistory";
 
 interface ProfileFormProps {
   profile: Profile | null; // null = create mode
@@ -578,6 +579,13 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
             placeholder="Optional notes about this profile..."
           />
         </section>
+
+        {/* Storage / Versions (edit mode only) */}
+        {profile && (
+          <section className="mt-6 pt-6 border-t border-border">
+            <ProfileVersionHistory profileId={profile.id} />
+          </section>
+        )}
       </div>
 
     </form>
