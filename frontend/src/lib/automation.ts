@@ -195,6 +195,28 @@ export interface ScheduleCreateInput {
 
 export type ScheduleUpdateInput = Partial<ScheduleCreateInput>;
 
+// ---------------------------------------------------------------------------
+// AI assistant (Phase 6, task QQQ)
+// ---------------------------------------------------------------------------
+//
+// Calls ``POST /api/ai/build-automation`` which feeds the prompt into an LLM
+// and returns a DSL flow JSON. ``configured=false`` means the server has no
+// ANTHROPIC_API_KEY and returned a dev-mode placeholder — the UI surfaces
+// this as a warning banner.
+
+export interface AiBuildResponse {
+  dsl: unknown;
+  configured: boolean;
+}
+
+export const ai = {
+  buildAutomation: (prompt: string) =>
+    request<AiBuildResponse>("/api/ai/build-automation", {
+      method: "POST",
+      body: { prompt },
+    }),
+};
+
 export const schedule = {
   list: (automationId: string) =>
     request<Schedule[]>(`/api/automations/${automationId}/schedules`),

@@ -32,6 +32,7 @@ class ProfileCreate(BaseModel):
     launch_args: list[str] = Field(default_factory=list)
     notes: str | None = None
     region: str | None = None
+    browser_type: Literal["chromium", "firefox"] = "chromium"
     tags: list[TagCreate] | None = None
 
 
@@ -59,6 +60,7 @@ class ProfileUpdate(BaseModel):
     launch_args: list[str] | None = None
     notes: str | None = Field(default=None)
     region: str | None = Field(default=None)
+    browser_type: Literal["chromium", "firefox"] | None = None
     tags: list[TagCreate] | None = None
 
 
@@ -103,6 +105,7 @@ class ProfileResponse(BaseModel):
     launch_args: list[str] = []
     notes: str | None = None
     region: str | None = None
+    browser_type: str = "chromium"
     user_data_dir: str
     created_at: str
     updated_at: str
@@ -713,3 +716,26 @@ class Invoice(BaseModel):
     period_end: datetime | None = None
     paid_at: datetime | None = None
     created_at: datetime
+
+
+# ---------------------------------------------------------------------------
+# AI assistant (Phase 6, task QQQ)
+# ---------------------------------------------------------------------------
+
+
+class AiBuildRequest(BaseModel):
+    """Request body for ``POST /api/ai/build-automation``."""
+
+    prompt: str = Field(min_length=5, max_length=4000)
+
+
+class AiBuildResponse(BaseModel):
+    """Generated DSL flow plus a flag indicating whether the real LLM ran.
+
+    ``configured=False`` means no ``ANTHROPIC_API_KEY`` was set on the
+    server so the response is a templated dev-mode placeholder — the
+    frontend surfaces this as a warning banner.
+    """
+
+    dsl: dict
+    configured: bool

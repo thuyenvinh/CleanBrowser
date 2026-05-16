@@ -35,11 +35,13 @@ from .dependencies import (
     browser_mgr,
 )
 from .middleware_audit import AuditMiddleware
+from .routers import ai as ai_router
 from .routers import auth as auth_router
 from .routers import automations as automations_router
 from .routers import billing as billing_router
 from .routers import cdp as cdp_router
 from .routers import clipboard as clipboard_router
+from .routers import marketplace as marketplace_router
 from .routers import profiles as profiles_router
 from .routers import proxies as proxies_router
 from .routers import regions as regions_router
@@ -176,6 +178,8 @@ app.include_router(cdp_router.router)
 app.include_router(clipboard_router.router)
 app.include_router(system_router.router)
 app.include_router(billing_router.router)
+app.include_router(ai_router.router)
+app.include_router(marketplace_router.router)
 
 
 # ── Static Frontend ───────────────────────────────────────────────────────────

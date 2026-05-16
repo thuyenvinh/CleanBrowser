@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { ListChecks, Play, Save, Trash2 } from "lucide-react";
+import { ListChecks, Play, Save, Sparkles, Trash2 } from "lucide-react";
 import {
+  ai as aiApi,
   automation as automationApi,
   type Automation,
   type AutomationCreateInput,
@@ -78,6 +79,12 @@ export function AutomationForm({
   // JSON edits the raw DSL text. Both write to ``versionBody`` so saving
   // is unchanged.
   const [editorMode, setEditorMode] = useState<"json" | "visual">("json");
+  // AI Build modal state — see "AI Build" button below the editor mode toggle.
+  const [aiOpen, setAiOpen] = useState(false);
+  const [aiPrompt, setAiPrompt] = useState("");
+  const [aiBusy, setAiBusy] = useState(false);
+  const [aiError, setAiError] = useState<string | null>(null);
+  const [aiWarn, setAiWarn] = useState<string | null>(null);
 
   // Run controls
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
@@ -426,6 +433,19 @@ export function AutomationForm({
                   >
                     Visual
                   </button>
+                  <button
+                    type="button"
+                    onClick={() => {
+                      setAiError(null);
+                      setAiWarn(null);
+                      setAiOpen(true);
+                    }}
+                    className="btn-secondary flex items-center gap-1.5"
+                    title="Generate a flow from a natural-language prompt"
+                  >
+                    <Sparkles className="h-3.5 w-3.5" />
+                    <span>AI Build</span>
+                  </button>
                 </div>
               )}
               {(automation.kind !== "flow" || editorMode === "json") && (
@@ -550,6 +570,83 @@ export function AutomationForm({
           </>
         )}
       </div>
+      {aiOpen && (
+        <div
+          onClick={(e) => {
+            if (e.target === e.currentTarget && !aiBusy) setAiOpen(false);
+          }}
+          className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-4"
+        >
+          <div className="bg-surface-1 border border-border w-[600px] max-w-full rounded shadow-xl p-5">
+            <div className="flex items-center gap-2 mb-3">
+              <Sparkles className="h-4 w-4" />
+              <h3 className="text-base font-semibold">AI Build Flow</h3>
+            </div>
+            <p className="text-xs text-gray-400 mb-2">
+              Describe what the automation should do in plain English.
+            </p>
+            <textarea
+              className="input text-sm"
+              rows={5}
+              value={aiPrompt}
+              onChange={(e) => setAiPrompt(e.target.value)}
+              placeholder="e.g. Login to twitter then post a tweet 'hello'"
+              disabled={aiBusy}
+            />
+            {aiWarn && (
+              <p className="text-xs text-yellow-400 mt-2">{aiWarn}</p>
+            )}
+            {aiError && (
+              <p className="text-xs text-red-400 mt-2">{aiError}</p>
+            )}
+            <div className="mt-3 flex justify-end gap-2">
+              <button
+                type="button"
+                onClick={() => setAiOpen(false)}
+                disabled={aiBusy}
+                className="btn-secondary"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                onClick={async () => {
+                  setAiError(null);
+                  setAiWarn(null);
+                  if (aiPrompt.trim().length < 5) {
+                    setAiError("Prompt is too short");
+                    return;
+                  }
+                  setAiBusy(true);
+                  try {
+                    const res = await aiApi.buildAutomation(aiPrompt);
+                    setVersionBody(JSON.stringify(res.dsl, null, 2));
+                    setJsonError(null);
+                    if (!res.configured) {
+                      setAiWarn(
+                        "Demo mode — set ANTHROPIC_API_KEY for real AI.",
+                      );
+                    } else {
+                      setAiOpen(false);
+                    }
+                  } catch (err) {
+                    setAiError(
+                      err instanceof Error ? err.message : "Generation failed",
+                    );
+                  } finally {
+                    setAiBusy(false);
+                  }
+                }}
+                disabled={aiBusy}
+                className="btn-primary flex items-center gap-1.5"
+              >
+                <Sparkles className="h-3.5 w-3.5" />
+                <span>{aiBusy ? "Generating..." : "Generate"}</span>
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </form>
   );
 }
