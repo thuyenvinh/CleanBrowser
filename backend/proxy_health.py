@@ -30,6 +30,7 @@ from typing import Any
 import httpx
 
 from . import db_proxy
+from .middleware_rls import system_context
 
 logger = logging.getLogger("cloakbrowser.proxy_health")
 
@@ -58,15 +59,21 @@ async def _check_one(proxy_row: dict[str, Any]) -> None:
     proxy_id = proxy_row["id"]
 
     # Resolve plaintext URL (Fernet-decrypt happens inside build_proxy_url).
+    # All DB calls in this worker run under ``system_context`` because the
+    # health-check task has no user / tenant — without the bypass, the
+    # restrictive RLS policies from migration 0012 would return zero rows
+    # for both the proxy lookup and the health-update write.
     try:
-        url = db_proxy.build_proxy_url(proxy_id)
+        with system_context():
+            url = db_proxy.build_proxy_url(proxy_id)
     except Exception as exc:  # noqa: BLE001 — record & continue
         try:
-            db_proxy.update_proxy_health(
-                proxy_id,
-                status="fail",
-                last_error=f"build_url_failed: {type(exc).__name__}: {str(exc)[:180]}",
-            )
+            with system_context():
+                db_proxy.update_proxy_health(
+                    proxy_id,
+                    status="fail",
+                    last_error=f"build_url_failed: {type(exc).__name__}: {str(exc)[:180]}",
+                )
         except Exception:  # noqa: BLE001
             logger.exception("update_proxy_health failed for %s", proxy_id)
         return
@@ -96,21 +103,23 @@ async def _check_one(proxy_row: dict[str, Any]) -> None:
             country_code = None
 
         try:
-            db_proxy.update_proxy_health(
-                proxy_id,
-                status="ok",
-                latency_ms=latency_ms,
-                last_error=None,
-                country_code=country_code,
-            )
+            with system_context():
+                db_proxy.update_proxy_health(
+                    proxy_id,
+                    status="ok",
+                    latency_ms=latency_ms,
+                    last_error=None,
+                    country_code=country_code,
+                )
         except Exception:  # noqa: BLE001
             logger.exception("update_proxy_health ok-path failed for %s", proxy_id)
     except Exception as exc:  # noqa: BLE001 — record & continue
         err = f"{type(exc).__name__}: {str(exc)[:200]}"
         try:
-            db_proxy.update_proxy_health(
-                proxy_id, status="fail", last_error=err
-            )
+            with system_context():
+                db_proxy.update_proxy_health(
+                    proxy_id, status="fail", last_error=err
+                )
         except Exception:  # noqa: BLE001
             logger.exception("update_proxy_health fail-path failed for %s", proxy_id)
 
@@ -118,7 +127,8 @@ async def _check_one(proxy_row: dict[str, Any]) -> None:
 async def _run_one_pass() -> None:
     """Fetch the due-for-check batch and probe each with bounded concurrency."""
     try:
-        rows = db_proxy.list_proxies_for_check(stale_minutes=5)
+        with system_context():
+            rows = db_proxy.list_proxies_for_check(stale_minutes=5)
     except Exception:
         logger.exception("failed to list proxies for check")
         return

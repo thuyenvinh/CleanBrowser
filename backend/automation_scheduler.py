@@ -35,6 +35,7 @@ from typing import Any
 from croniter import croniter
 
 from . import db_automation
+from .middleware_rls import system_context
 
 logger = logging.getLogger("cloakbrowser.automation_scheduler")
 
@@ -94,27 +95,33 @@ async def _fire_schedule(schedule: dict[str, Any]) -> None:
     """
     schedule_id = schedule["id"]
     try:
-        auto = db_automation.get_automation(schedule["automation_id"])
-        if not auto or not auto.get("latest_version_id"):
-            logger.warning(
-                "schedule %s: automation has no version, skipping",
-                schedule_id,
-            )
-            return
+        # All DB reads/writes in this fire path run under ``system_context``
+        # because the scheduler is a cron-driven worker with no user / tenant
+        # binding — without the bypass, the restrictive RLS policies from
+        # migration 0012 would hide the automation row and the run insert
+        # would silently see zero affected rows.
+        with system_context():
+            auto = db_automation.get_automation(schedule["automation_id"])
+            if not auto or not auto.get("latest_version_id"):
+                logger.warning(
+                    "schedule %s: automation has no version, skipping",
+                    schedule_id,
+                )
+                return
 
-        version = db_automation.get_version(auto["latest_version_id"])
-        if version is None:
-            logger.warning(
-                "schedule %s: latest_version_id points at missing row",
-                schedule_id,
-            )
-            return
+            version = db_automation.get_version(auto["latest_version_id"])
+            if version is None:
+                logger.warning(
+                    "schedule %s: latest_version_id points at missing row",
+                    schedule_id,
+                )
+                return
 
-        run = db_automation.create_run(
-            automation_version_id=auto["latest_version_id"],
-            profile_id=schedule.get("profile_id"),
-            triggered_by="schedule",
-        )
+            run = db_automation.create_run(
+                automation_version_id=auto["latest_version_id"],
+                profile_id=schedule.get("profile_id"),
+                triggered_by="schedule",
+            )
 
         # Lazy import: routers/automations imports plenty of heavy modules
         # (playwright, etc.); deferring it until first fire keeps the
@@ -139,7 +146,8 @@ async def _tick() -> None:
     """Run one reconcile pass: pick up due schedules and fire each."""
     now = datetime.now(tz.utc)
     try:
-        due = db_automation.list_due_schedules(now)
+        with system_context():
+            due = db_automation.list_due_schedules(now)
     except Exception:
         logger.exception("scheduler tick: list_due_schedules failed")
         return
@@ -150,10 +158,12 @@ async def _tick() -> None:
             # Record the fire BEFORE computing next, so a bad cron expr
             # at least bumps last_fire_at (loop won't pick the row again
             # in this tick since next_fire_at is being updated below).
-            db_automation.mark_schedule_fired(s["id"], now)
+            with system_context():
+                db_automation.mark_schedule_fired(s["id"], now)
             try:
                 next_fire = _compute_next_fire(s["cron"], s["timezone"], now)
-                db_automation.set_schedule_next_fire(s["id"], next_fire)
+                with system_context():
+                    db_automation.set_schedule_next_fire(s["id"], next_fire)
             except Exception:
                 logger.exception(
                     "schedule %s: failed to compute/persist next_fire",
@@ -170,7 +180,8 @@ async def _init_next_fire_for_new_schedules() -> None:
     ``next_fire_at`` (i.e. just-created via the API and never reconciled)
     gets it computed once so the next tick can pick it up."""
     try:
-        all_schedules = db_automation.list_schedules(due_only=False)
+        with system_context():
+            all_schedules = db_automation.list_schedules(due_only=False)
     except Exception:
         logger.exception("scheduler init: list_schedules failed")
         return
@@ -181,7 +192,8 @@ async def _init_next_fire_for_new_schedules() -> None:
             continue
         try:
             next_fire = _compute_next_fire(s["cron"], s["timezone"], now)
-            db_automation.set_schedule_next_fire(s["id"], next_fire)
+            with system_context():
+                db_automation.set_schedule_next_fire(s["id"], next_fire)
             logger.info(
                 "schedule %s initialised next_fire_at=%s",
                 s["id"],
