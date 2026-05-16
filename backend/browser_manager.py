@@ -346,6 +346,50 @@ class BrowserManager:
                 )
             raise
 
+    async def _snapshot_after_stop(
+        self, profile_id: str, session_id: str | None
+    ) -> None:
+        """Pack + upload user_data_dir after the browser process is gone.
+
+        Best-effort: never raises into the caller. Skips profiles that
+        have no ``workspace_id`` (legacy / orphan rows from before
+        Phase 2 multi-tenant) because they have no tenant to charge the
+        storage object to. Must run AFTER the Chromium process is dead
+        so the on-disk state isn't being mutated mid-tar.
+        """
+        try:
+            from . import database as db
+            from . import db_auth
+            from .profile_snapshot import snapshot_to_storage
+
+            profile = db.get_profile(profile_id)
+            if not profile:
+                logger.debug("snapshot: profile %s gone, skipping", profile_id)
+                return
+            workspace_id = profile.get("workspace_id")
+            if not workspace_id:
+                logger.debug(
+                    "snapshot: profile %s has no workspace_id, skipping",
+                    profile_id,
+                )
+                return
+            ws = db_auth.get_workspace(workspace_id)
+            tenant_id = ws.get("tenant_id") if ws else None
+            if not tenant_id:
+                logger.warning(
+                    "snapshot: workspace %s missing tenant_id, skipping %s",
+                    workspace_id, profile_id,
+                )
+                return
+            await snapshot_to_storage(
+                profile_id=profile_id,
+                user_data_dir=profile["user_data_dir"],
+                tenant_id=str(tenant_id),
+                session_id=session_id,
+            )
+        except Exception:
+            logger.exception("post-stop snapshot failed for %s", profile_id)
+
     async def _on_browser_closed(self, profile_id: str):
         """Called when browser exits (crash, user closed via VNC, or stop())."""
         from . import database as db
@@ -356,6 +400,10 @@ class BrowserManager:
         if running:
             logger.info("Browser closed for profile %s, cleaning up", profile_id)
             await self.vnc.stop_vnc(running.display)
+            # Snapshot AFTER VNC teardown but BEFORE end_session so the
+            # snapshot's session_id link still resolves cleanly. Browser
+            # process is already dead at this point (close event fired).
+            await self._snapshot_after_stop(profile_id, running.session_id)
             if running.session_id:
                 # end_session is idempotent: if stop() already marked this as
                 # 'stopped', the WHERE ended_at IS NULL clause makes this a no-op.
@@ -386,6 +434,11 @@ class BrowserManager:
             logger.warning("Error closing context for %s: %s", profile_id, exc)
 
         await self.vnc.stop_vnc(running.display)
+
+        # Snapshot user_data_dir to cloud storage now that Chromium has
+        # released its on-disk locks. Done before end_session so the
+        # snapshot row can still reference the still-active session_id.
+        await self._snapshot_after_stop(profile_id, running.session_id)
 
         if running.session_id:
             try:
