@@ -10,18 +10,109 @@ import asyncio
 import logging
 
 import httpx
-from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
+from fastapi import (
+    APIRouter,
+    Depends,
+    HTTPException,
+    Request,
+    WebSocket,
+    WebSocketDisconnect,
+    status,
+)
 
-from ..dependencies import _check_websocket_origin, _is_https, browser_mgr
+from .. import database as db
+from .. import db_auth
+from ..auth_tokens import decode_session
+from ..dependencies import (
+    ROLE_LEVEL,
+    SESSION_COOKIE,
+    _check_websocket_origin,
+    _is_https,
+    browser_mgr,
+    check_role_for_workspace,
+    get_optional_user,
+)
 
 logger = logging.getLogger("cloakbrowser.manager")
 
 router = APIRouter(prefix="/api/profiles", tags=["cdp"])
 
 
+def _enforce_cdp_role(profile_id: str, user: dict | None, min_level: int) -> None:
+    """Pre-flight RBAC check for HTTP CDP endpoints.
+
+    Mirrors ``routers/profiles._load_and_check``: resolves the profile, returns
+    404 when it doesn't exist or the authenticated user isn't a member of its
+    workspace, 403 when membership exists but the role is below ``min_level``.
+    Anonymous / legacy AUTH_TOKEN callers (``user is None``) bypass the role
+    check, matching the rest of the multi-tenant layering.
+    """
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    check_role_for_workspace(user, profile.get("workspace_id"), min_level)
+
+
+async def _authorize_ws_for_profile(
+    websocket: WebSocket, profile_id: str, min_level: int
+) -> dict | None:
+    """Pre-handshake role check for a profile-scoped WebSocket endpoint.
+
+    See ``routers/vnc._authorize_ws_for_profile`` for the full contract — this
+    is an intentional duplicate scoped to CDP so we don't widen the public
+    surface of ``dependencies``.
+    """
+    token = websocket.cookies.get(SESSION_COOKIE)
+    user = None
+    if token:
+        claims = decode_session(token)
+        if claims and claims.get("sub"):
+            try:
+                candidate = db_auth.get_user(claims["sub"])
+            except Exception:
+                logger.exception(
+                    "_authorize_ws_for_profile: db lookup failed for sub=%s",
+                    claims.get("sub"),
+                )
+                candidate = None
+            if candidate and candidate.get("status") == "active":
+                if not claims.get("tid") or claims["tid"] == candidate.get("tenant_id"):
+                    user = candidate
+
+    profile = db.get_profile(profile_id)
+    if not profile:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return None
+
+    if user is not None:
+        ws_id = profile.get("workspace_id")
+        if not ws_id:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return None
+        try:
+            role = db_auth.get_member_role(ws_id, user["id"])
+        except Exception:
+            logger.exception(
+                "_authorize_ws_for_profile: get_member_role failed (ws=%s user=%s)",
+                ws_id,
+                user.get("id"),
+            )
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return None
+        if not role or ROLE_LEVEL.get(role, 0) < min_level:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return None
+
+    return profile
+
+
 @router.get("/{profile_id}/cdp")
-async def cdp_info(profile_id: str):
+async def cdp_info(
+    profile_id: str,
+    user: dict | None = Depends(get_optional_user),
+):
     """Return CDP connection info. Prevents SPA catch-all from serving index.html."""
+    _enforce_cdp_role(profile_id, user, ROLE_LEVEL["launcher"])
     running = browser_mgr.running.get(profile_id)
     if not running:
         raise HTTPException(status_code=404, detail="Profile not running")
@@ -34,8 +125,13 @@ async def cdp_info(profile_id: str):
 
 @router.get("/{profile_id}/cdp/json/version/")
 @router.get("/{profile_id}/cdp/json/version")
-async def cdp_json_version(profile_id: str, request: Request):
+async def cdp_json_version(
+    profile_id: str,
+    request: Request,
+    user: dict | None = Depends(get_optional_user),
+):
     """Proxy Chrome's /json/version, rewriting WS URLs to go through our proxy."""
+    _enforce_cdp_role(profile_id, user, ROLE_LEVEL["launcher"])
     running = browser_mgr.running.get(profile_id)
     if not running:
         raise HTTPException(status_code=404, detail="Profile not running")
@@ -61,8 +157,13 @@ async def cdp_json_version(profile_id: str, request: Request):
 @router.get("/{profile_id}/cdp/json/list")
 @router.get("/{profile_id}/cdp/json/")
 @router.get("/{profile_id}/cdp/json")
-async def cdp_json_list(profile_id: str, request: Request):
+async def cdp_json_list(
+    profile_id: str,
+    request: Request,
+    user: dict | None = Depends(get_optional_user),
+):
     """Proxy Chrome's /json/list, rewriting WS URLs."""
+    _enforce_cdp_role(profile_id, user, ROLE_LEVEL["launcher"])
     running = browser_mgr.running.get(profile_id)
     if not running:
         raise HTTPException(status_code=404, detail="Profile not running")
@@ -154,6 +255,10 @@ async def cdp_proxy(websocket: WebSocket, profile_id: str):
     if not await _check_websocket_origin(websocket):
         return
 
+    # Pre-handshake RBAC: CDP access requires launcher+ role.
+    if await _authorize_ws_for_profile(websocket, profile_id, min_level=ROLE_LEVEL["launcher"]) is None:
+        return
+
     running = browser_mgr.running.get(profile_id)
     if not running:
         await websocket.close(code=4004, reason="Profile not running")
@@ -180,6 +285,10 @@ async def cdp_proxy(websocket: WebSocket, profile_id: str):
 async def cdp_page_proxy(websocket: WebSocket, profile_id: str, path: str):
     """Proxy page-specific CDP WebSocket connections (e.g. /devtools/page/GUID)."""
     if not await _check_websocket_origin(websocket):
+        return
+
+    # Pre-handshake RBAC: CDP access requires launcher+ role.
+    if await _authorize_ws_for_profile(websocket, profile_id, min_level=ROLE_LEVEL["launcher"]) is None:
         return
 
     running = browser_mgr.running.get(profile_id)

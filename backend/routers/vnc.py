@@ -6,9 +6,17 @@ import asyncio
 import logging
 import struct
 
-from fastapi import APIRouter, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, WebSocket, WebSocketDisconnect, status
 
-from ..dependencies import _check_websocket_origin, browser_mgr
+from .. import database as db
+from .. import db_auth
+from ..auth_tokens import decode_session
+from ..dependencies import (
+    ROLE_LEVEL,
+    SESSION_COOKIE,
+    _check_websocket_origin,
+    browser_mgr,
+)
 
 logger = logging.getLogger("cloakbrowser.manager")
 
@@ -207,6 +215,68 @@ def _filter_rfb_client_messages(data: bytes) -> bytes:
     return bytes(result)
 
 
+# ── Pre-handshake authorization ──────────────────────────────────────────────
+
+
+async def _authorize_ws_for_profile(
+    websocket: WebSocket, profile_id: str, min_level: int
+) -> dict | None:
+    """Pre-handshake role check for a profile-scoped WebSocket endpoint.
+
+    Mirrors the HTTP-side ``_load_and_check`` in routers/profiles.py:
+
+    * Resolves the session-cookie user (None for legacy AUTH_TOKEN / anonymous).
+    * If no user is present → bypass workspace/role check (matches HTTP routes).
+    * If profile is missing, the profile has no workspace, the user isn't a
+      member, or the user's role is below ``min_level`` → close the socket with
+      ``WS_1008_POLICY_VIOLATION`` and return ``None``.
+
+    Returns the profile row on success.
+    """
+    token = websocket.cookies.get(SESSION_COOKIE)
+    user = None
+    if token:
+        claims = decode_session(token)
+        if claims and claims.get("sub"):
+            try:
+                candidate = db_auth.get_user(claims["sub"])
+            except Exception:
+                logger.exception(
+                    "_authorize_ws_for_profile: db lookup failed for sub=%s",
+                    claims.get("sub"),
+                )
+                candidate = None
+            if candidate and candidate.get("status") == "active":
+                if not claims.get("tid") or claims["tid"] == candidate.get("tenant_id"):
+                    user = candidate
+
+    profile = db.get_profile(profile_id)
+    if not profile:
+        await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+        return None
+
+    if user is not None:
+        ws_id = profile.get("workspace_id")
+        if not ws_id:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return None
+        try:
+            role = db_auth.get_member_role(ws_id, user["id"])
+        except Exception:
+            logger.exception(
+                "_authorize_ws_for_profile: get_member_role failed (ws=%s user=%s)",
+                ws_id,
+                user.get("id"),
+            )
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return None
+        if not role or ROLE_LEVEL.get(role, 0) < min_level:
+            await websocket.close(code=status.WS_1008_POLICY_VIOLATION)
+            return None
+
+    return profile
+
+
 # ── VNC WebSocket Proxy ──────────────────────────────────────────────────────
 
 
@@ -214,6 +284,10 @@ def _filter_rfb_client_messages(data: bytes) -> bytes:
 async def vnc_proxy(websocket: WebSocket, profile_id: str):
     """Proxy WebSocket frames between the frontend and a profile's KasmVNC."""
     if not await _check_websocket_origin(websocket):
+        return
+
+    # Pre-handshake RBAC: viewing live browser requires launcher+ role.
+    if await _authorize_ws_for_profile(websocket, profile_id, min_level=ROLE_LEVEL["launcher"]) is None:
         return
 
     running = browser_mgr.running.get(profile_id)
