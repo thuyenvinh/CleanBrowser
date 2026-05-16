@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { Lock, PanelLeftClose, PanelLeft, Server, Globe } from "lucide-react";
+import { Lock, PanelLeftClose, PanelLeft, Server, Globe, Workflow } from "lucide-react";
 import { useProfiles } from "./hooks/useProfiles";
 import { useAuth } from "./hooks/useAuth";
 import { api, setOnUnauthorized, type ProfileCreateData } from "./lib/api";
@@ -12,11 +12,12 @@ import { LoginPage } from "./components/LoginPage";
 import { SignupPage } from "./components/SignupPage";
 import { WorkspaceSelector } from "./components/WorkspaceSelector";
 import { ProxyPage } from "./components/ProxyPage";
+import { AutomationPage } from "./components/AutomationPage";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
 type AuthView = "login" | "signup";
-type Tab = "profiles" | "proxies";
+type Tab = "profiles" | "proxies" | "automations";
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>("checking");
@@ -251,6 +252,14 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
                 <Globe className="h-3.5 w-3.5" />
                 Proxies
               </button>
+              <button
+                onClick={() => setTab("automations")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "automations" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Automations"
+              >
+                <Workflow className="h-3.5 w-3.5" />
+                Automations
+              </button>
             </div>
             {tab === "profiles" && selected && (
               <LaunchButton
@@ -287,6 +296,9 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
         <div className="flex-1 overflow-y-auto overscroll-contain">
           {tab === "proxies" && (
             <ProxyPage currentWorkspaceId={currentWorkspaceId} />
+          )}
+          {tab === "automations" && (
+            <AutomationPage currentWorkspaceId={currentWorkspaceId} />
           )}
           {tab === "profiles" && view === "empty" && (
             <div className="flex items-center justify-center h-full">
