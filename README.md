@@ -89,7 +89,7 @@ Each CloakBrowser profile generates a completely different device identity. To t
 - **AI**: Anthropic Claude (configurable model)
 - **Observability**: ready for OpenTelemetry (next phase)
 
-See [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for production setup.
+See [docs/SETUP.md](docs/SETUP.md) for quickstart (local + VPS), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full env-var reference.
 
 ## Development
 
