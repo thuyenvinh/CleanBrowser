@@ -720,6 +720,29 @@ def mark_schedule_fired(
         conn.commit()
 
 
+def list_due_schedules(now: datetime.datetime) -> list[dict[str, Any]]:
+    """Return enabled schedules whose ``next_fire_at <= now`` (NULL excluded).
+
+    Worker-side counterpart of :func:`list_schedules` with ``due_only=True``,
+    but parameterised on ``now`` so the caller can pass an explicit UTC
+    timestamp (and tests can freeze time). Capped at 100 rows per tick to
+    bound the work the reconcile loop does in a single pass.
+    """
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM automation_schedules
+                   WHERE enabled = true
+                     AND next_fire_at IS NOT NULL
+                     AND next_fire_at <= %s
+                   ORDER BY next_fire_at
+                   LIMIT 100""",
+                (now,),
+            )
+            rows = cur.fetchall()
+    return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
+
+
 __all__ = [
     "VALID_KINDS",
     "VALID_SCRIPT_LANGUAGES",
@@ -752,4 +775,5 @@ __all__ = [
     "delete_schedule",
     "set_schedule_next_fire",
     "mark_schedule_fired",
+    "list_due_schedules",
 ]
