@@ -67,10 +67,39 @@ def get_db():
 
     Connection is returned to the pool on exit. Caller is responsible for
     committing; on exception the connection is rolled back before return.
+
+    Before yielding, the GUC ``app.current_tenant_id`` is set from the
+    request-scoped tenant context (see :mod:`backend.middleware_rls`). This
+    drives the row-level-security policies introduced in migration
+    ``0009_add_rls``: when the GUC is empty the permissive policies let every
+    row through (legacy AUTH_TOKEN flows, scripts, tests), and when it is set
+    the policies filter rows to that tenant as defence in depth underneath
+    the application-layer workspace check. The GUC is cleared again before
+    the connection is handed back to the pool so the next checkout starts
+    from a clean slate even though ``SimpleConnectionPool`` does not reset
+    session state on its own.
     """
+    # Import locally to avoid a circular import at module load — both
+    # ``middleware_rls`` and ``database`` are imported very early in the
+    # FastAPI app boot path.
+    from .middleware_rls import get_current_tenant
+
     pool = _get_pool()
     conn = pool.getconn()
+    tenant_id = get_current_tenant() or ""
     try:
+        # ``set_config(name, value, is_local)``: ``is_local=false`` means
+        # "session-scoped"; we explicitly reset it below so the lifetime is
+        # in practice request-scoped (we never hold a conn across requests).
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_config('app.current_tenant_id', %s, false)",
+                (tenant_id,),
+            )
+        # The set_config call above implicitly opens a transaction on the
+        # connection; commit it so the GUC change is durable for this
+        # session but no transaction lingers when the caller starts theirs.
+        conn.commit()
         yield conn
     except Exception:
         try:
@@ -79,7 +108,49 @@ def get_db():
             pass
         raise
     finally:
+        # Reset before returning to the pool so a subsequent checkout by a
+        # different request (or a script) doesn't inherit our filter.
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT set_config('app.current_tenant_id', '', false)"
+                )
+            conn.commit()
+        except Exception:
+            # If reset itself blew up, force-rollback so the connection
+            # isn't returned to the pool in an aborted state.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
         pool.putconn(conn)
+
+
+def set_tenant_context(conn, tenant_id: str | None) -> None:
+    """Manually set ``app.current_tenant_id`` on a raw connection.
+
+    Helper for callers that bypass :func:`get_db` (background tasks, ad-hoc
+    scripts) and still want their queries filtered by RLS. Passing ``None``
+    or an empty string disables filtering for that connection.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT set_config('app.current_tenant_id', %s, false)",
+            (tenant_id or "",),
+        )
+
+
+def reset_tenant_context(conn) -> None:
+    """Clear ``app.current_tenant_id`` on a raw connection.
+
+    Symmetric counterpart to :func:`set_tenant_context`. Call this before
+    returning a hand-managed connection to a shared pool to avoid state
+    leaking into the next checkout.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT set_config('app.current_tenant_id', '', false)"
+        )
 
 
 def init_db() -> None:

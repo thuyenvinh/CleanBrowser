@@ -22,6 +22,7 @@ from . import database as db
 from . import db_auth
 from .auth_tokens import decode_session
 from .browser_manager import BrowserManager
+from .middleware_rls import clear_tenant, set_tenant
 
 logger = logging.getLogger("cloakbrowser.manager")
 
@@ -134,30 +135,41 @@ def get_optional_user(request: Request) -> dict[str, Any] | None:
     """
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
+        clear_tenant()
         return None
     payload = decode_session(token)
     if not payload:
+        clear_tenant()
         return None
     user_id = payload.get("sub")
     if not user_id:
+        clear_tenant()
         return None
     try:
         user = db_auth.get_user(user_id)
     except Exception:  # DB error: treat as unauth'd, don't 500 the caller
         logger.exception("get_optional_user: db lookup failed for sub=%s", user_id)
+        clear_tenant()
         return None
     if not user or user.get("status") != "active":
+        clear_tenant()
         return None
     # Sanity-check the tenant id in the token matches the user's tenant — if a
     # user is reassigned tenants (shouldn't happen in v1, but be defensive) the
     # stale token must not grant access.
     if payload.get("tid") and payload["tid"] != user.get("tenant_id"):
+        clear_tenant()
         return None
     # Expose the user dict on request.state so downstream middleware (notably
     # AuditMiddleware) can attribute actions to the authenticated actor. We
     # only set this when we have a real user — unauthenticated requests leave
     # the attribute unset so middleware can fall back to ``getattr(...)``.
     request.state.user = user
+    # Pin the tenant id into a request-scoped ContextVar so that the next
+    # ``get_db()`` checkout sets ``app.current_tenant_id`` on its connection,
+    # engaging the RLS policies from migration 0009 as defence in depth
+    # underneath ``check_role_for_workspace``. See :mod:`backend.middleware_rls`.
+    set_tenant(user.get("tenant_id"))
     return user
 
 
