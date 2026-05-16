@@ -500,6 +500,23 @@ def list_active_sessions() -> list[dict[str, Any]]:
             return [_row_to_session(r) for r in cur.fetchall()]
 
 
+def list_long_running_sessions(min_age_seconds: int) -> list[dict[str, Any]]:
+    """Return active (``ended_at IS NULL``) sessions whose ``started_at`` is
+    older than ``min_age_seconds``. Used by :mod:`backend.idle_reaper` to
+    enforce the Phase 3 hard 30-minute browser time-limit."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM profile_sessions
+                   WHERE ended_at IS NULL
+                     AND started_at < now() - make_interval(secs => %s)
+                   ORDER BY started_at
+                   LIMIT 100""",
+                (min_age_seconds,),
+            )
+            return [_row_to_session(r) for r in cur.fetchall()]
+
+
 def cleanup_stale_sessions() -> int:
     """Mark every active session as crashed.
 
