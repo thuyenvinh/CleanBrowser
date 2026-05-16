@@ -8,17 +8,11 @@ interface WorkspaceSelectorProps {
   onSwitch: (id: string) => void;
 }
 
-const FALLBACK_WORKSPACE: Workspace = { id: "default", name: "Default Workspace" };
-
 export function WorkspaceSelector({
   workspaces,
   currentWorkspaceId,
   onSwitch,
 }: WorkspaceSelectorProps) {
-  const list: Workspace[] =
-    workspaces.length > 0 ? workspaces : [FALLBACK_WORKSPACE];
-  const current: Workspace =
-    list.find((w) => w.id === currentWorkspaceId) ?? list[0]!;
   const [open, setOpen] = useState(false);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -32,6 +26,13 @@ export function WorkspaceSelector({
     document.addEventListener("mousedown", handleClick);
     return () => document.removeEventListener("mousedown", handleClick);
   }, [open]);
+
+  // Nothing to render until the auth bootstrap has fetched the workspace
+  // list — avoids flashing a stale placeholder. All hooks must be called
+  // before this early return.
+  if (workspaces.length === 0) return null;
+  const current: Workspace =
+    workspaces.find((w) => w.id === currentWorkspaceId) ?? workspaces[0]!;
 
   return (
     <div className="relative" ref={ref}>
@@ -50,7 +51,7 @@ export function WorkspaceSelector({
           <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
             Workspaces
           </div>
-          {list.map((w) => {
+          {workspaces.map((w) => {
             const active = w.id === current.id;
             return (
               <button

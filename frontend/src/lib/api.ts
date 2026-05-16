@@ -88,13 +88,33 @@ export function setOnUnauthorized(cb: (() => void) | null) {
   _onUnauthorized = cb;
 }
 
+// Current workspace id — injected as ``X-Workspace-Id`` header on every
+// workspace-scoped request. ``null`` means "no workspace selected" (e.g.
+// before login or after logout); in that case the header is omitted and the
+// backend will reject /api/profiles* with a 4xx, which is the desired
+// behaviour.
+let _currentWorkspaceId: string | null = null;
+export function setWorkspaceId(id: string | null) {
+  _currentWorkspaceId = id;
+}
+export function getWorkspaceId(): string | null {
+  return _currentWorkspaceId;
+}
+
 async function request<T>(
   path: string,
   options?: RequestInit,
 ): Promise<T> {
+  const headers: Record<string, string> = {
+    "Content-Type": "application/json",
+    ...((options?.headers as Record<string, string>) ?? {}),
+  };
+  if (_currentWorkspaceId) {
+    headers["X-Workspace-Id"] = _currentWorkspaceId;
+  }
   const res = await fetch(path, {
-    headers: { "Content-Type": "application/json" },
     ...options,
+    headers,
   });
   if (!res.ok) {
     if (res.status === 401 && _onUnauthorized) {

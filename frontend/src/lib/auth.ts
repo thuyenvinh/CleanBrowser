@@ -1,14 +1,15 @@
 /**
  * Multi-tenant auth client.
  *
- * Talks to /api/auth/* endpoints that will be implemented in Phase 2:
+ * Talks to /api/auth/* endpoints implemented by the backend:
  *   POST /api/auth/signup  -> AuthResponse, sets httpOnly session cookie
  *   POST /api/auth/login   -> AuthResponse, sets httpOnly session cookie
  *   POST /api/auth/logout  -> 204
  *   GET  /api/auth/me      -> { user, workspaces } | 401
+ *   GET  /api/workspaces   -> Workspace[]            | 401
  *
- * Until the backend is ready these calls will fail; consumers must handle
- * errors / 404 gracefully. Legacy token login still lives in `api.login()`.
+ * Auth endpoints do NOT carry an X-Workspace-Id header — they precede
+ * workspace selection. See ``lib/api.ts`` for the workspace-scoped client.
  */
 
 export interface User {
@@ -20,11 +21,22 @@ export interface User {
 export interface Workspace {
   id: string;
   name: string;
+  /** Optional fields returned by GET /api/workspaces. */
+  tenant_id?: string;
+  owner_user_id?: string;
+  created_at?: string;
+  role?: string;
 }
 
+/**
+ * Successful signup/login response shape.
+ *
+ * The backend returns ``{user, workspaces}`` (workspaces is a list — even a
+ * fresh signup yields a singleton list).
+ */
 export interface AuthResponse {
   user: User;
-  workspace: Workspace;
+  workspaces: Workspace[];
 }
 
 export interface MeResponse {
@@ -92,4 +104,6 @@ export const auth = {
     authRequest<void>("/api/auth/logout", { method: "POST" }),
 
   me: () => authRequest<MeResponse>("/api/auth/me"),
+
+  listWorkspaces: () => authRequest<Workspace[]>("/api/workspaces"),
 };

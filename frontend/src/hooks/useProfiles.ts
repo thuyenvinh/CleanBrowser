@@ -1,7 +1,16 @@
 import { useCallback, useEffect, useState } from "react";
 import { api, type Profile, type ProfileCreateData } from "../lib/api";
 
-export function useProfiles() {
+/**
+ * Hook for managing the profile list.
+ *
+ * ``currentWorkspaceId`` is purely a refetch trigger: the actual workspace
+ * scoping happens server-side via the ``X-Workspace-Id`` header that
+ * ``lib/api`` injects globally (see ``setWorkspaceId``). Passing it as a
+ * dependency means switching workspaces clears the list and pulls fresh
+ * data instead of showing stale rows.
+ */
+export function useProfiles(currentWorkspaceId?: string | null) {
   const [profiles, setProfiles] = useState<Profile[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -19,11 +28,15 @@ export function useProfiles() {
   }, []);
 
   useEffect(() => {
+    // Reset to a loading state when the workspace changes so callers see
+    // the spinner instead of stale rows from the previous workspace.
+    setLoading(true);
+    setProfiles([]);
     refresh();
     // Poll for status changes every 3 seconds
     const interval = setInterval(refresh, 3000);
     return () => clearInterval(interval);
-  }, [refresh]);
+  }, [refresh, currentWorkspaceId]);
 
   const create = useCallback(
     async (data: ProfileCreateData): Promise<Profile | undefined> => {

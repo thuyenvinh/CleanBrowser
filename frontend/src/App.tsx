@@ -83,14 +83,23 @@ export default function App() {
     if (authView === "signup") {
       return (
         <SignupPage
-          onSuccess={() => setAuthState("ok")}
+          onSuccess={() => {
+            // SignupPage calls /api/auth/signup directly. Pull the freshly
+            // issued session into useAuth so workspaces + the API client
+            // header are populated before we render AppContent.
+            authCtx.refresh();
+            setAuthState("ok");
+          }}
           onSwitchToLogin={() => setAuthView("login")}
         />
       );
     }
     return (
       <LoginPage
-        onSuccess={() => setAuthState("ok")}
+        onSuccess={() => {
+          authCtx.refresh();
+          setAuthState("ok");
+        }}
         onLegacySuccess={() => setAuthState("ok")}
         onSwitchToSignup={() => setAuthView("signup")}
       />
@@ -122,7 +131,10 @@ interface AppContentProps {
 }
 
 function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWorkspace, onLogout }: AppContentProps) {
-  const { profiles, loading, error, create, update, remove, launch, stop } = useProfiles();
+  // Pass ``currentWorkspaceId`` so useProfiles refetches whenever the user
+  // switches workspace (the header injection happens in lib/api).
+  const { profiles, loading, error, create, update, remove, launch, stop } =
+    useProfiles(currentWorkspaceId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("empty");
   const [sidebarOpen, setSidebarOpen] = useState(true);
