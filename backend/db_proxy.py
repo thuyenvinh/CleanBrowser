@@ -420,6 +420,28 @@ def build_proxy_url(proxy_id: str) -> str:
     return f"{scheme}://{host}:{port}"
 
 
+def list_proxies_for_check(stale_minutes: int = 5) -> list[dict[str, Any]]:
+    """Return proxies whose ``last_check_at`` is NULL or older than
+    ``stale_minutes``. Used by the background health worker.
+
+    The query is cross-workspace by design — health probing is a global
+    pool-maintenance concern. Rows are capped at 200 per pass to keep
+    a single iteration bounded; the next pass will pick up the remainder.
+    """
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM proxies
+                   WHERE last_check_at IS NULL
+                      OR last_check_at < now() - make_interval(mins => %s)
+                   ORDER BY last_check_at NULLS FIRST
+                   LIMIT 200""",
+                (stale_minutes,),
+            )
+            rows = cur.fetchall()
+    return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
+
+
 __all__ = [
     "VALID_TYPES",
     "VALID_STATUSES",
@@ -427,6 +449,7 @@ __all__ = [
     "create_proxy",
     "get_proxy",
     "list_proxies",
+    "list_proxies_for_check",
     "update_proxy",
     "delete_proxy",
     "update_proxy_health",
