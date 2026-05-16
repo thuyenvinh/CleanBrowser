@@ -115,12 +115,19 @@ def _row_to_profile(row: dict[str, Any]) -> dict[str, Any]:
     # Stringify id for parity (was TEXT in SQLite).
     if isinstance(profile.get("id"), uuid.UUID):
         profile["id"] = str(profile["id"])
+    # workspace_id is UUID-typed in Postgres; psycopg2 returns ``uuid.UUID``
+    # objects which Pydantic/JSON layers downstream don't always like. Mirror
+    # the ``id`` normalisation. ``None`` stays ``None`` for legacy / orphan
+    # profiles (see migration 0005).
+    if isinstance(profile.get("workspace_id"), uuid.UUID):
+        profile["workspace_id"] = str(profile["workspace_id"])
     return profile
 
 
 def create_profile(
     name: str,
     fingerprint_seed: int | None = None,
+    workspace_id: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
     profile_id = str(uuid.uuid4())
@@ -137,9 +144,9 @@ def create_profile(
                     user_agent, screen_width, screen_height, gpu_vendor, gpu_renderer,
                     hardware_concurrency, humanize, human_preset, headless, geoip,
                     clipboard_sync, auto_launch, color_scheme, launch_args, notes,
-                    user_data_dir, created_at, updated_at
+                    user_data_dir, workspace_id, created_at, updated_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s)""",
+                          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s)""",
                 (
                     profile_id, name, seed,
                     fields.get("proxy"),
@@ -161,7 +168,7 @@ def create_profile(
                     fields.get("color_scheme"),
                     json.dumps(fields.get("launch_args") or []),
                     fields.get("notes"),
-                    user_data_dir, now, now,
+                    user_data_dir, workspace_id, now, now,
                 ),
             )
             for t in tags:
@@ -194,10 +201,34 @@ def get_profile(profile_id: str) -> dict[str, Any] | None:
             return profile
 
 
-def list_profiles() -> list[dict[str, Any]]:
+def list_profiles(
+    workspace_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """List profiles, optionally scoped to a set of workspace ids.
+
+    ``workspace_ids`` semantics — chosen so legacy / unauth call sites keep
+    working without thinking about workspaces:
+
+    * ``None``  → no filter at all; return every row (legacy AUTH_TOKEN
+      mode, test suite, scripts hitting the API without a session).
+    * ``[]``    → user has zero workspaces → return ``[]``. We short-circuit
+      to avoid emitting a ``WHERE workspace_id IN ()`` which is invalid SQL.
+    * non-empty list → ``WHERE workspace_id IN (...)``. Profiles whose
+      ``workspace_id`` is ``NULL`` (orphans / legacy) are deliberately
+      excluded — a workspace member must not see un-scoped profiles.
+    """
+    if workspace_ids is not None and len(workspace_ids) == 0:
+        return []
     with get_db() as conn:
         with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute("SELECT * FROM profiles ORDER BY created_at DESC")
+            if workspace_ids is None:
+                cur.execute("SELECT * FROM profiles ORDER BY created_at DESC")
+            else:
+                cur.execute(
+                    "SELECT * FROM profiles WHERE workspace_id = ANY(%s::uuid[]) "
+                    "ORDER BY created_at DESC",
+                    (list(workspace_ids),),
+                )
             rows = cur.fetchall()
             profiles: list[dict[str, Any]] = []
             for row in rows:
@@ -234,6 +265,7 @@ def update_profile(profile_id: str, **fields: Any) -> dict[str, Any] | None:
         "user_agent", "screen_width", "screen_height", "gpu_vendor", "gpu_renderer",
         "hardware_concurrency", "humanize", "human_preset", "headless", "geoip",
         "clipboard_sync", "auto_launch", "color_scheme", "launch_args", "notes",
+        "workspace_id",
     ):
         if col in fields:
             if col == "launch_args":
