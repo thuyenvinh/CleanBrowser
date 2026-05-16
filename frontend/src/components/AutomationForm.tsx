@@ -12,30 +12,13 @@ import {
   type AutomationVersion,
 } from "../lib/automation";
 import type { Profile } from "../lib/api";
-
-// --- Sibling component stubs ------------------------------------------------
-// Agent KK owns the real ``ScheduleList`` / ``ScheduleForm`` (file
-// ``components/ScheduleList.tsx``). Until that PR lands, these inline stubs
-// keep the TypeScript build green. Swap to ``import { ScheduleList,
-// ScheduleForm } from "./ScheduleList";`` once merged.
-interface ScheduleListStubProps {
-  automationId: string;
-}
-function ScheduleList(_props: ScheduleListStubProps) {
-  return (
-    <div className="text-xs text-gray-500 italic">
-      Schedule list (coming soon)
-    </div>
-  );
-}
-interface ScheduleFormStubProps {
-  automationId: string;
-  onCreated?: () => void;
-}
-function ScheduleForm(_props: ScheduleFormStubProps) {
-  return null;
-}
-// ---------------------------------------------------------------------------
+import { ScheduleList } from "./ScheduleList";
+import { useSchedules } from "../hooks/useSchedules";
+// Agent OO owns ``./FlowEditor`` (wave 8). Once that PR lands the import
+// resolves and the Visual tab below renders the graph editor. Until then
+// the JSON tab still works — TypeScript will flag the import as missing,
+// which is expected during the interleave window.
+import { FlowEditor } from "./FlowEditor";
 
 interface AutomationFormProps {
   automation: Automation | null; // null = create mode
@@ -91,6 +74,10 @@ export function AutomationForm({
   const [jsonError, setJsonError] = useState<string | null>(null);
   const [versionSaving, setVersionSaving] = useState(false);
   const [versionMsg, setVersionMsg] = useState<string | null>(null);
+  // Flow editor mode toggle. Visual hands off to ``FlowEditor`` (agent OO);
+  // JSON edits the raw DSL text. Both write to ``versionBody`` so saving
+  // is unchanged.
+  const [editorMode, setEditorMode] = useState<"json" | "visual">("json");
 
   // Run controls
   const [selectedProfileId, setSelectedProfileId] = useState<string>("");
@@ -419,30 +406,69 @@ export function AutomationForm({
                   </select>
                 </div>
               )}
-              <textarea
-                className="input font-mono text-xs"
-                rows={14}
-                spellCheck={false}
-                value={versionBody}
-                onChange={(e) => {
-                  setVersionBody(e.target.value);
-                  if (automation.kind === "flow") {
-                    try {
-                      JSON.parse(e.target.value);
-                      setJsonError(null);
-                    } catch (err) {
-                      setJsonError(
-                        err instanceof Error ? err.message : "Invalid JSON",
-                      );
+              {automation.kind === "flow" && (
+                <div className="flex items-center gap-2 mb-2">
+                  <button
+                    type="button"
+                    onClick={() => setEditorMode("json")}
+                    className={
+                      editorMode === "json" ? "btn-primary" : "btn-secondary"
                     }
+                  >
+                    JSON
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => setEditorMode("visual")}
+                    className={
+                      editorMode === "visual" ? "btn-primary" : "btn-secondary"
+                    }
+                  >
+                    Visual
+                  </button>
+                </div>
+              )}
+              {(automation.kind !== "flow" || editorMode === "json") && (
+                <textarea
+                  className="input font-mono text-xs"
+                  rows={14}
+                  spellCheck={false}
+                  value={versionBody}
+                  onChange={(e) => {
+                    setVersionBody(e.target.value);
+                    if (automation.kind === "flow") {
+                      try {
+                        JSON.parse(e.target.value);
+                        setJsonError(null);
+                      } catch (err) {
+                        setJsonError(
+                          err instanceof Error ? err.message : "Invalid JSON",
+                        );
+                      }
+                    }
+                  }}
+                  placeholder={
+                    automation.kind === "flow"
+                      ? "DSL JSON..."
+                      : "Script source code..."
                   }
-                }}
-                placeholder={
-                  automation.kind === "flow"
-                    ? "DSL JSON..."
-                    : "Script source code..."
-                }
-              />
+                />
+              )}
+              {automation.kind === "flow" && editorMode === "visual" && (
+                <FlowEditor
+                  value={(() => {
+                    try {
+                      return JSON.parse(versionBody);
+                    } catch {
+                      return { nodes: [], edges: [] };
+                    }
+                  })()}
+                  onChange={(dsl: unknown) => {
+                    setVersionBody(JSON.stringify(dsl, null, 2));
+                    setJsonError(null);
+                  }}
+                />
+              )}
               {jsonError && (
                 <p className="text-xs text-red-400 mt-1">{jsonError}</p>
               )}
@@ -516,17 +542,58 @@ export function AutomationForm({
             </section>
 
             <section>
-              <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
-                Schedules
-              </h3>
-              <div className="space-y-2">
-                <ScheduleList automationId={automation.id} />
-                <ScheduleForm automationId={automation.id} />
-              </div>
+              <SchedulesSection
+                automationId={automation.id}
+                workspaceProfiles={profiles}
+              />
             </section>
           </>
         )}
       </div>
     </form>
+  );
+}
+
+/**
+ * Wraps ``useSchedules`` + ``ScheduleList`` for the automation edit form.
+ *
+ * Kept as a local helper rather than exported so the parent form stays
+ * the single owner of the workspace-profile list (we just funnel it
+ * through unchanged). ``useSchedules`` is keyed on ``automationId``: it
+ * refetches when the user navigates between automations.
+ */
+function SchedulesSection({
+  automationId,
+  workspaceProfiles,
+}: {
+  automationId: string;
+  workspaceProfiles: Profile[];
+}) {
+  const {
+    schedules,
+    loading,
+    create,
+    update,
+    delete: remove,
+  } = useSchedules(automationId);
+  const profileOptions = useMemo(
+    () => workspaceProfiles.map((p) => ({ id: p.id, name: p.name })),
+    [workspaceProfiles],
+  );
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">
+        Schedules
+      </h3>
+      <ScheduleList
+        automationId={automationId}
+        schedules={schedules}
+        profiles={profileOptions}
+        loading={loading}
+        onCreate={create}
+        onUpdate={update}
+        onDelete={remove}
+      />
+    </div>
   );
 }

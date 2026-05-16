@@ -165,3 +165,49 @@ export const automation = {
   getRun: (run_id: string) =>
     request<AutomationRun>(`/api/automations/runs/${run_id}`),
 };
+
+// ---------------------------------------------------------------------------
+// Schedules
+// ---------------------------------------------------------------------------
+//
+// Mirrors backend ``automation_schedules``. ``next_fire_at`` /
+// ``last_fire_at`` are server-managed (the cron reconcile loop owns them)
+// — clients only read.
+
+export interface Schedule {
+  id: string;
+  automation_id: string;
+  profile_id: string | null;
+  cron: string;
+  timezone: string;
+  enabled: boolean;
+  next_fire_at: string | null;
+  last_fire_at: string | null;
+  created_at: string;
+}
+
+export interface ScheduleCreateInput {
+  cron: string;
+  profile_id?: string | null;
+  timezone?: string;
+  enabled?: boolean;
+}
+
+export type ScheduleUpdateInput = Partial<ScheduleCreateInput>;
+
+export const schedule = {
+  list: (automationId: string) =>
+    request<Schedule[]>(`/api/automations/${automationId}/schedules`),
+  create: (automationId: string, input: ScheduleCreateInput) =>
+    request<Schedule>(`/api/automations/${automationId}/schedules`, {
+      method: "POST",
+      body: input,
+    }),
+  update: (id: string, input: ScheduleUpdateInput) =>
+    request<Schedule>(`/api/automations/schedules/${id}`, {
+      method: "PUT",
+      body: input,
+    }),
+  delete: (id: string) =>
+    request<void>(`/api/automations/schedules/${id}`, { method: "DELETE" }),
+};

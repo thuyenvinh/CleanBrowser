@@ -51,6 +51,7 @@ from ..dependencies import (
     check_role_for_workspace,
     get_current_user,
 )
+from ..models import Schedule, ScheduleCreate, ScheduleUpdate
 
 logger = logging.getLogger("cloakbrowser.automation")
 
@@ -565,3 +566,99 @@ async def get_run(
         raise
 
     return AutomationRun(**run)
+
+
+# ── Schedules ────────────────────────────────────────────────────────────────
+#
+# Cron schedule CRUD. The reconcile loop in
+# :mod:`backend.automation_scheduler` computes ``next_fire_at`` shortly
+# after rows are inserted/updated, so endpoints here only own the static
+# fields (cron / timezone / enabled / profile_id).
+#
+# Authz: viewer+ to list, editor+ to mutate — same floor as automation
+# CRUD. Routes accepting ``{schedule_id}`` resolve the parent automation
+# first so we can use the existing ``_load_and_check_automation`` to
+# enforce workspace membership and hide cross-tenant existence behind 404.
+#
+# Cron expressions are validated with ``croniter`` (already a backend
+# dependency for the scheduler worker). The import is deferred so the
+# rest of the router keeps loading if croniter goes missing in some env.
+
+
+def _validate_cron_or_400(cron: str) -> None:
+    try:
+        from croniter import croniter as _ct  # noqa: WPS433
+        _ct(cron)
+    except Exception:
+        raise HTTPException(status_code=400, detail="Invalid cron expression")
+
+
+@router.get(
+    "/{automation_id}/schedules", response_model=list[Schedule]
+)
+def list_schedules_route(
+    automation_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    _load_and_check_automation(automation_id, user, ROLE_LEVEL["viewer"])
+    rows = _db().list_schedules(automation_id=automation_id)
+    return [Schedule(**r) for r in rows]
+
+
+@router.post(
+    "/{automation_id}/schedules",
+    status_code=201,
+    response_model=Schedule,
+)
+def create_schedule_route(
+    automation_id: str,
+    body: ScheduleCreate,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    _load_and_check_automation(automation_id, user, ROLE_LEVEL["editor"])
+    _validate_cron_or_400(body.cron)
+    row = _db().create_schedule(
+        automation_id=automation_id,
+        cron=body.cron,
+        profile_id=body.profile_id,
+        timezone=body.timezone,
+        enabled=body.enabled,
+    )
+    return Schedule(**row)
+
+
+@router.put("/schedules/{schedule_id}", response_model=Schedule)
+def update_schedule_route(
+    schedule_id: str,
+    body: ScheduleUpdate,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    s = _db().get_schedule(schedule_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    _load_and_check_automation(
+        s["automation_id"], user, ROLE_LEVEL["editor"]
+    )
+    if body.cron:
+        _validate_cron_or_400(body.cron)
+    updated = _db().update_schedule(
+        schedule_id, **body.model_dump(exclude_unset=True)
+    )
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    return Schedule(**updated)
+
+
+@router.delete("/schedules/{schedule_id}", status_code=204)
+def delete_schedule_route(
+    schedule_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    s = _db().get_schedule(schedule_id)
+    if not s:
+        raise HTTPException(status_code=404, detail="Schedule not found")
+    _load_and_check_automation(
+        s["automation_id"], user, ROLE_LEVEL["editor"]
+    )
+    _db().delete_schedule(schedule_id)
+    return Response(status_code=204)
