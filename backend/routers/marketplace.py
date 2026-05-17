@@ -155,6 +155,36 @@ def install_app(
         automation_id=auto["id"],
     )
 
+    # Paid apps: record the earning row so the creator dashboard can show
+    # the income immediately. The 14-day refund window keeps the row in
+    # ``pending`` until the daily worker promotes it to ``available``.
+    #
+    # TODO Phase 8: actual payment collection (Stripe PaymentIntent on the
+    # buyer's saved card) lives here once the Stripe integration lands.
+    # For now we only record the bookkeeping side — the install proceeds
+    # whether or not the buyer would actually be charged. This keeps the
+    # creator dashboard demoable end-to-end before the payment plumbing
+    # is wired up.
+    price_cents = int(app.get("price_cents") or 0)
+    if price_cents > 0 and install is not None:
+        try:
+            db_marketplace.record_earning(
+                app=app,
+                install_id=install.get("id"),
+                buyer_tenant_id=user["tenant_id"],
+                gross_cents=price_cents,
+            )
+        except Exception:
+            # Earning recording failures must not break the install
+            # endpoint — the install ledger row is already committed and
+            # the buyer's automation clone exists. Surface via logs so
+            # ops can reconcile manually.
+            logger.exception(
+                "marketplace.record_earning failed app=%s install=%s",
+                app_id,
+                install.get("id"),
+            )
+
     return {"install": install, "automation": auto, "version": version}
 
 
@@ -313,3 +343,45 @@ def admin_reject(
         raise HTTPException(status_code=404, detail="App not found")
     logger.info("marketplace.reject app=%s by=%s", app_id, user.get("id"))
     return app
+
+
+# ── Creator dashboard (Phase 6 phase 3) ──────────────────────────────────────
+#
+# Per-creator surface so users who shipped an app can track installs and
+# earnings without going through the admin queue. Auth gate is the bare
+# session — the data layer scopes every query on ``creator_user_id =
+# user['id']`` so a logged-in user can only see their own earnings.
+
+
+@router.get("/creator/earnings")
+def list_my_earnings(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Earnings rows + headline counters for the logged-in creator.
+
+    Returns ``{summary, earnings}`` in one payload so the dashboard's
+    summary cards and ledger table can hydrate from a single round-trip.
+    ``earnings`` is capped at 100 — the dashboard paginates client-side
+    for now; if a top creator outgrows the cap we can swap in keyset
+    pagination without changing the response envelope.
+    """
+    return {
+        "summary": db_marketplace.creator_summary(user["id"]),
+        "earnings": db_marketplace.list_earnings_for_creator(
+            user["id"], limit=100
+        ),
+    }
+
+
+@router.get("/creator/apps")
+def list_my_apps(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    """Apps where the user is creator — includes pending / rejected rows.
+
+    The public ``/apps`` listing only returns approved + public rows, so
+    a creator with a pending submission has no other way to see it in the
+    UI. This endpoint surfaces every moderation state so the dashboard
+    can show a "your submissions" table next to the earnings ledger.
+    """
+    return db_marketplace.list_apps_by_creator(user["id"])

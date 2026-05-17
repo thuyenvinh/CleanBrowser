@@ -473,6 +473,256 @@ def reject_app(
     return _row_to_dict(row)
 
 
+# ---------------------------------------------------------------------------
+# Creator dashboard — revenue share + earnings ledger (Phase 6 phase 3)
+# ---------------------------------------------------------------------------
+#
+# Surface for migration 0025. Earnings are recorded by the install endpoint
+# the moment a paid app is installed; the row is owned by the creator (via
+# ``creator_user_id``) and carries the revenue split snapshotted at event
+# time so re-pricing the app later cannot rewrite history.
+#
+# The 14-day pending → available window matches Stripe's chargeback window
+# convention: the earning is held in escrow until the buyer can no longer
+# request a refund, at which point a daily worker (``mark_earnings_available_due``)
+# flips the status so the creator can request payout.
+
+# Refund window before pending earnings become available for payout. Matches
+# Stripe's default chargeback window so escrow expires aligned with the
+# payment provider's own dispute timeline.
+_AVAILABLE_AFTER_DAYS: int = 14
+
+
+# Columns selected by the creator dashboard list — includes the app slug/name
+# so the UI doesn't N+1 fetch each app row.
+_EARNINGS_LIST_COLUMNS: str = (
+    "e.id, e.app_id, e.install_id, e.creator_user_id, e.buyer_tenant_id, "
+    "e.gross_cents, e.creator_cents, e.platform_cents, e.currency, "
+    "e.status, e.available_at, e.paid_out_at, e.created_at, "
+    "a.slug AS app_slug, a.name AS app_name"
+)
+
+
+def record_earning(
+    app: dict[str, Any],
+    install_id: str | None,
+    buyer_tenant_id: str,
+    gross_cents: int,
+) -> dict[str, Any] | None:
+    """Compute the revenue split + insert one ``marketplace_earnings`` row.
+
+    No-ops (returns ``None``) when:
+
+    * the app has no ``creator_user_id`` (seeded official apps fall here —
+      the platform keeps 100% of revenue with no creator to credit), or
+    * ``gross_cents <= 0`` (free apps must never spawn a ledger row).
+
+    The split is snapshotted at event time: ``creator_cents = gross *
+    revenue_share_pct // 100`` (integer division, platform absorbs the
+    rounding remainder via ``platform_cents = gross - creator_cents``).
+    Both columns are stored explicitly so a future ``UPDATE
+    marketplace_apps SET revenue_share_pct = ...`` cannot retroactively
+    change historical bills.
+
+    ``available_at`` is set to ``now() + 14 days`` so the payout worker
+    (``mark_earnings_available_due``) can promote the row without
+    recomputing the threshold each pass.
+    """
+    creator_user_id = app.get("creator_user_id")
+    if not creator_user_id or gross_cents <= 0:
+        return None
+
+    share_pct = int(app.get("revenue_share_pct") or 70)
+    # Clamp to [0, 100] so a corrupted column value can't yield negative
+    # creator_cents (which would also blow the NOT NULL check below via
+    # the ``creator_cents >= 0`` invariant the dashboard relies on).
+    share_pct = max(0, min(100, share_pct))
+    creator_cents = (int(gross_cents) * share_pct) // 100
+    platform_cents = int(gross_cents) - creator_cents
+
+    new_id = str(uuid.uuid4())
+    available_at = datetime.datetime.now(
+        datetime.timezone.utc
+    ) + datetime.timedelta(days=_AVAILABLE_AFTER_DAYS)
+
+    sql = (
+        "INSERT INTO marketplace_earnings ("
+        "    id, app_id, install_id, creator_user_id, buyer_tenant_id,"
+        "    gross_cents, creator_cents, platform_cents,"
+        "    status, available_at"
+        ") VALUES ("
+        "    %s, %s, %s, %s, %s,"
+        "    %s, %s, %s,"
+        "    'pending', %s"
+        ") RETURNING *"
+    )
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                sql,
+                (
+                    new_id,
+                    app.get("id"),
+                    install_id,
+                    creator_user_id,
+                    buyer_tenant_id,
+                    int(gross_cents),
+                    creator_cents,
+                    platform_cents,
+                    available_at,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row)
+
+
+def list_earnings_for_creator(
+    user_id: str,
+    status: str | None = None,
+    limit: int = 200,
+) -> list[dict[str, Any]]:
+    """Return earnings rows where the caller is the creator, newest first.
+
+    Hits ``ix_marketplace_earnings_creator`` for the ordering. The optional
+    ``status`` filter narrows by lifecycle stage
+    (``pending`` / ``available`` / ``paid_out`` / ``refunded``); ``None``
+    returns all statuses so the dashboard can tab through them client-side.
+    """
+    if not _safe_uuid(user_id):
+        return []
+    where_sql = "WHERE e.creator_user_id = %s"
+    params: list[Any] = [user_id]
+    if status is not None:
+        where_sql += " AND e.status = %s"
+        params.append(status)
+    params.append(int(limit))
+
+    sql = (
+        f"SELECT {_EARNINGS_LIST_COLUMNS} "
+        "FROM marketplace_earnings e "
+        "JOIN marketplace_apps a ON a.id = e.app_id "
+        f"{where_sql} "
+        "ORDER BY e.created_at DESC "
+        "LIMIT %s"
+    )
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, params)
+            rows = cur.fetchall()
+    return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
+
+
+def creator_summary(user_id: str) -> dict[str, Any]:
+    """Aggregate counters for the dashboard's summary cards.
+
+    Returns ``{total_apps, total_installs, pending_cents, available_cents,
+    paid_out_cents}``. Two queries (one over ``marketplace_apps`` for app
+    + install counts, one over ``marketplace_earnings`` for the monetary
+    rollup) — keeps each plan simple and indexable rather than fighting
+    Postgres's planner with a single mega-JOIN.
+
+    Returns zeroed values for unknown / malformed user ids so the UI can
+    render the empty state without a special-case branch.
+    """
+    empty = {
+        "total_apps": 0,
+        "total_installs": 0,
+        "pending_cents": 0,
+        "available_cents": 0,
+        "paid_out_cents": 0,
+    }
+    if not _safe_uuid(user_id):
+        return empty
+
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            # App + cumulative install counts. Hits the row directly via the
+            # creator_user_id column (small set per creator, no index needed
+            # at the volumes we expect this phase).
+            cur.execute(
+                "SELECT COUNT(*) AS apps, "
+                "       COALESCE(SUM(install_count), 0) AS installs "
+                "FROM marketplace_apps "
+                "WHERE creator_user_id = %s",
+                (user_id,),
+            )
+            app_row = cur.fetchone() or {}
+
+            # Money rollup, bucketed by lifecycle status. FILTER avoids
+            # multiple round-trips and lets Postgres scan the partial
+            # creator index once.
+            cur.execute(
+                "SELECT "
+                "  COALESCE(SUM(creator_cents) FILTER (WHERE status = 'pending'), 0) AS pending, "
+                "  COALESCE(SUM(creator_cents) FILTER (WHERE status = 'available'), 0) AS available, "
+                "  COALESCE(SUM(creator_cents) FILTER (WHERE status = 'paid_out'), 0) AS paid_out "
+                "FROM marketplace_earnings "
+                "WHERE creator_user_id = %s",
+                (user_id,),
+            )
+            money_row = cur.fetchone() or {}
+
+    return {
+        "total_apps": int(app_row.get("apps") or 0),
+        "total_installs": int(app_row.get("installs") or 0),
+        "pending_cents": int(money_row.get("pending") or 0),
+        "available_cents": int(money_row.get("available") or 0),
+        "paid_out_cents": int(money_row.get("paid_out") or 0),
+    }
+
+
+def mark_earnings_available_due() -> int:
+    """Worker helper: promote pending earnings whose escrow has expired.
+
+    Flips ``status='pending' → 'available'`` for every row where
+    ``available_at <= now()``. Returns the row count so the worker can
+    log a tick summary. Idempotent — re-running the worker on the same
+    minute is a no-op once the rows have been flipped.
+
+    Designed to be called by a daily cron / scheduler (not the request
+    path) so the dashboard's "available_cents" total reflects yesterday's
+    promotions on the morning of day 15.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE marketplace_earnings "
+                "SET status = 'available' "
+                "WHERE status = 'pending' "
+                "  AND available_at IS NOT NULL "
+                "  AND available_at <= now()"
+            )
+            count = cur.rowcount
+        conn.commit()
+    return int(count or 0)
+
+
+def list_apps_by_creator(user_id: str) -> list[dict[str, Any]]:
+    """Return every app where the caller is the creator (any moderation status).
+
+    Used by the creator dashboard's "My Apps" tab — must surface pending /
+    rejected submissions too so the creator can track moderation outcomes
+    without having to know the slug.
+    """
+    if not _safe_uuid(user_id):
+        return []
+    sql = (
+        "SELECT id, slug, name, description, category, kind, version, "
+        "       install_count, is_official, is_public, moderation_status, "
+        "       moderation_notes, price_cents, revenue_share_pct, "
+        "       created_at, updated_at, submitted_at "
+        "FROM marketplace_apps "
+        "WHERE creator_user_id = %s "
+        "ORDER BY created_at DESC"
+    )
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql, (user_id,))
+            rows = cur.fetchall()
+    return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
+
+
 __all__ = [
     "list_public_apps",
     "get_app",
@@ -484,4 +734,9 @@ __all__ = [
     "list_pending",
     "approve_app",
     "reject_app",
+    "record_earning",
+    "list_earnings_for_creator",
+    "creator_summary",
+    "mark_earnings_available_due",
+    "list_apps_by_creator",
 ]

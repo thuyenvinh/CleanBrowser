@@ -93,3 +93,75 @@ export const marketplace = {
       body: JSON.stringify(input),
     }),
 };
+
+// ── Creator dashboard (Phase 6 phase 3) ────────────────────────────────────
+//
+// Revenue share + earnings ledger. Matches the ``/creator/*`` routes in
+// :mod:`backend.routers.marketplace`. ``status`` walks
+// ``pending → available → paid_out`` with ``refunded`` as terminal.
+
+export type MarketplaceEarningStatus =
+  | "pending"
+  | "available"
+  | "paid_out"
+  | "refunded";
+
+export interface MarketplaceEarning {
+  id: string;
+  app_id: string;
+  install_id: string | null;
+  creator_user_id: string;
+  buyer_tenant_id: string;
+  gross_cents: number;
+  creator_cents: number;
+  platform_cents: number;
+  currency: string;
+  status: MarketplaceEarningStatus;
+  available_at: string | null;
+  paid_out_at: string | null;
+  created_at: string;
+  // Joined from marketplace_apps so the dashboard table doesn't N+1.
+  app_slug?: string;
+  app_name?: string;
+}
+
+export interface CreatorSummary {
+  total_apps: number;
+  total_installs: number;
+  pending_cents: number;
+  available_cents: number;
+  paid_out_cents: number;
+}
+
+export interface CreatorEarningsResponse {
+  summary: CreatorSummary;
+  earnings: MarketplaceEarning[];
+}
+
+// A creator's own app row — includes ``moderation_status`` so the dashboard
+// can surface pending / rejected submissions the public listing hides.
+export interface CreatorApp {
+  id: string;
+  slug: string;
+  name: string;
+  description: string | null;
+  category: string | null;
+  kind: "flow" | "script";
+  version: string;
+  install_count: number;
+  is_official: boolean;
+  is_public: boolean;
+  moderation_status: "approved" | "pending" | "rejected";
+  moderation_notes: string | null;
+  price_cents: number;
+  revenue_share_pct: number;
+  created_at: string;
+  updated_at: string;
+  submitted_at: string | null;
+}
+
+export const marketplaceCreator = {
+  earnings: () =>
+    request<CreatorEarningsResponse>("/api/marketplace/creator/earnings"),
+  apps: () => request<CreatorApp[]>("/api/marketplace/creator/apps"),
+};
