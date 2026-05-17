@@ -1,7 +1,8 @@
-import { useMemo } from "react";
-import { Package, Download, Check, Loader2, Star, ExternalLink } from "lucide-react";
+import { useMemo, useState } from "react";
+import { Package, Download, Check, Loader2, Star, ExternalLink, Plus } from "lucide-react";
 import { useMarketplace } from "../hooks/useMarketplace";
 import type { MarketplaceApp } from "../lib/marketplace";
+import { MarketplaceSubmitDialog } from "./MarketplaceSubmitDialog";
 
 interface MarketplacePageProps {
   currentWorkspaceId: string | null;
@@ -17,7 +18,9 @@ export function MarketplacePage({ currentWorkspaceId }: MarketplacePageProps) {
     error,
     install,
     uninstall,
+    submit,
   } = useMarketplace(currentWorkspaceId);
+  const [submitOpen, setSubmitOpen] = useState(false);
 
   // Derive category chips from whatever the backend returned. Backend agent
   // PPP owns the canonical list; we only surface what actually exists so the
@@ -66,6 +69,13 @@ export function MarketplacePage({ currentWorkspaceId }: MarketplacePageProps) {
               Browse and install community flows and scripts.
             </p>
           </div>
+          <button
+            onClick={() => setSubmitOpen(true)}
+            className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded bg-blue-600 text-white hover:bg-blue-500"
+          >
+            <Plus className="h-3.5 w-3.5" />
+            Submit your app
+          </button>
         </div>
 
         {/* Category filter chips */}
@@ -119,6 +129,13 @@ export function MarketplacePage({ currentWorkspaceId }: MarketplacePageProps) {
           </div>
         )}
       </div>
+
+      {submitOpen && (
+        <MarketplaceSubmitDialog
+          onClose={() => setSubmitOpen(false)}
+          onSubmit={submit}
+        />
+      )}
     </div>
   );
 }

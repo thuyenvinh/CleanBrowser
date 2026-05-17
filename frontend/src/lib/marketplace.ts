@@ -55,6 +55,21 @@ async function request<T>(path: string, init: RequestInit = {}): Promise<T> {
   return text ? JSON.parse(text) : (undefined as T);
 }
 
+export interface MarketplaceAppSubmit {
+  slug: string;
+  name: string;
+  kind: "flow" | "script";
+  description?: string;
+  long_description?: string;
+  category?: string;
+  dsl_json?: object;
+  script_language?: string;
+  script_code?: string;
+  icon_url?: string;
+  creator_name?: string;
+  creator_url?: string;
+}
+
 export const marketplace = {
   listApps: (category?: string) =>
     request<MarketplaceApp[]>(
@@ -72,4 +87,9 @@ export const marketplace = {
       `/api/marketplace/installs/${installId}`,
       { method: "DELETE" },
     ),
+  submit: (input: MarketplaceAppSubmit) =>
+    request<MarketplaceApp>("/api/marketplace/apps/submit", {
+      method: "POST",
+      body: JSON.stringify(input),
+    }),
 };

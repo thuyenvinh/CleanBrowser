@@ -190,3 +190,126 @@ def list_my_installs(
     cheap to ship in one payload, and the UI can filter client-side.
     """
     return db_marketplace.list_installs(user["tenant_id"])
+
+
+# ── Creator portal (Phase 6 phase 2) ─────────────────────────────────────────
+
+
+@router.post("/apps/submit", status_code=201)
+def submit_app(
+    body: dict[str, Any],
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Submit a new app for moderation review.
+
+    Lands in ``moderation_status='pending'`` with ``is_public=false`` so
+    the row stays invisible to the public listing until an admin acts on
+    it via the queue below. Slug uniqueness is checked up-front with a
+    friendly 409 rather than letting the column UNIQUE constraint surface
+    as an opaque 500.
+    """
+    slug = (body.get("slug") or "").strip()
+    if not slug or not slug.replace("-", "").isalnum():
+        raise HTTPException(
+            status_code=400,
+            detail="slug must be alphanumeric with dashes",
+        )
+    if db_marketplace.get_app_by_slug(slug):
+        raise HTTPException(status_code=409, detail="slug already taken")
+
+    name = (body.get("name") or "").strip()
+    if not name or len(name) > 200:
+        raise HTTPException(
+            status_code=400, detail="name 1-200 chars required"
+        )
+
+    kind = body.get("kind", "flow")
+    if kind not in ("flow", "script"):
+        raise HTTPException(
+            status_code=400, detail="kind must be 'flow' or 'script'"
+        )
+
+    dsl = body.get("dsl_json")
+    if kind == "flow" and (
+        not isinstance(dsl, dict) or "nodes" not in dsl
+    ):
+        raise HTTPException(
+            status_code=400,
+            detail="flow kind requires dsl_json with nodes",
+        )
+
+    app = db_marketplace.submit_app(
+        slug=slug,
+        name=name,
+        description=body.get("description"),
+        long_description=body.get("long_description"),
+        kind=kind,
+        dsl_json=dsl,
+        script_language=body.get("script_language"),
+        script_code=body.get("script_code"),
+        category=body.get("category"),
+        icon_url=body.get("icon_url"),
+        creator_name=body.get("creator_name") or user.get("email"),
+        creator_url=body.get("creator_url"),
+        submitted_by_user_id=user["id"],
+    )
+    logger.info(
+        "marketplace.submit slug=%s user=%s kind=%s",
+        slug,
+        user.get("id"),
+        kind,
+    )
+    return app
+
+
+@router.get("/admin/pending")
+def list_pending_apps(
+    user: dict[str, Any] = Depends(get_current_user),
+) -> list[dict[str, Any]]:
+    """List apps awaiting moderation.
+
+    Phase 6 phase 2: any authenticated user can view the queue — good
+    enough for solo / small-team deploys where the operator is also the
+    sole submitter. A proper super-admin check (tenant-level role) is
+    deferred to Phase 6 phase 3 when the admin console lands.
+    """
+    _ = user  # acknowledged: auth is the only gate this phase
+    return db_marketplace.list_pending()
+
+
+@router.post("/admin/apps/{app_id}/approve")
+def admin_approve(
+    app_id: str,
+    body: dict[str, Any] | None = None,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Approve a pending submission — flips it to public + approved."""
+    _ = user
+    body = body or {}
+    app = db_marketplace.approve_app(
+        app_id, moderation_notes=body.get("notes")
+    )
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    logger.info("marketplace.approve app=%s by=%s", app_id, user.get("id"))
+    return app
+
+
+@router.post("/admin/apps/{app_id}/reject")
+def admin_reject(
+    app_id: str,
+    body: dict[str, Any],
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Reject a pending submission. Rejection notes are required so the
+    creator gets actionable feedback in their submission history."""
+    notes = (body.get("notes") or "").strip()
+    if not notes:
+        raise HTTPException(
+            status_code=400, detail="rejection notes required"
+        )
+    app = db_marketplace.reject_app(app_id, moderation_notes=notes)
+    if not app:
+        raise HTTPException(status_code=404, detail="App not found")
+    logger.info("marketplace.reject app=%s by=%s", app_id, user.get("id"))
+    return app

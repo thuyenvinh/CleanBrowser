@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from "react";
 import {
   marketplace,
   type MarketplaceApp,
+  type MarketplaceAppSubmit,
   type TenantAppInstall,
 } from "../lib/marketplace";
 
@@ -87,6 +88,23 @@ export function useMarketplace(currentWorkspaceId?: string | null) {
     }
   }, [installs]);
 
+  const submit = useCallback(
+    async (input: MarketplaceAppSubmit): Promise<MarketplaceApp | undefined> => {
+      try {
+        const created = await marketplace.submit(input);
+        // Submission lands in 'pending' so it doesn't appear in the public
+        // listing — no need to splice it into ``apps``. Just clear errors so
+        // the dialog can close cleanly.
+        setError(null);
+        return created;
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to submit app");
+        throw err;
+      }
+    },
+    [],
+  );
+
   return {
     apps,
     installs,
@@ -97,5 +115,6 @@ export function useMarketplace(currentWorkspaceId?: string | null) {
     refresh,
     install,
     uninstall,
+    submit,
   };
 }
