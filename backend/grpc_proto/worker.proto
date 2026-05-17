@@ -1,0 +1,49 @@
+syntax = "proto3";
+package cleanbrowser.worker;
+
+service WorkerService {
+  rpc Launch(LaunchRequest) returns (LaunchReply);
+  rpc Stop(StopRequest) returns (StopReply);
+  rpc Status(StatusRequest) returns (StatusReply);
+  rpc Capacity(CapacityRequest) returns (CapacityReply);
+  rpc IsRunning(IsRunningRequest) returns (IsRunningReply);
+  rpc CdpUrl(CdpUrlRequest) returns (CdpUrlReply);
+}
+
+message LaunchRequest { string profile_id = 1; }
+message LaunchReply {
+  string session_id = 1;
+  string worker_id = 2;
+  int32 cdp_port = 3;
+  int32 vnc_port = 4;
+  int32 display_num = 5;
+  string error = 6;
+}
+
+message StopRequest { string profile_id = 1; }
+message StopReply { string error = 1; }
+
+message StatusRequest { string profile_id = 1; }
+message StatusReply {
+  bool running = 1;
+  string session_id = 2;
+  string worker_id = 3;
+  int32 cdp_port = 4;
+  int32 vnc_port = 5;
+}
+
+message CapacityRequest {}
+message CapacityReply {
+  string worker_id = 1;
+  string region = 2;
+  int32 max_profiles = 3;
+  int32 running_count = 4;
+  double cpu_percent = 5;
+  int32 ram_mb_used = 6;
+}
+
+message IsRunningRequest { string profile_id = 1; }
+message IsRunningReply { bool running = 1; }
+
+message CdpUrlRequest { string profile_id = 1; }
+message CdpUrlReply { string cdp_url = 1; }

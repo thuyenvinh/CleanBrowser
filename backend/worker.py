@@ -126,3 +126,25 @@ def set_default_worker(worker: Worker) -> None:
     """For tests / future remote-worker bootstrap."""
     global _default
     _default = worker
+
+
+__all__ = [
+    "WorkerCapacity",
+    "LaunchResult",
+    "Worker",
+    "LocalWorker",
+    "RemoteWorker",
+    "get_default_worker",
+    "set_default_worker",
+]
+
+
+# Re-export RemoteWorker lazily for ``from backend.worker import RemoteWorker``.
+# Lazy via ``__getattr__`` avoids the circular import that would arise from a
+# top-level ``from .worker_remote import RemoteWorker`` (worker_remote imports
+# from this module).
+def __getattr__(name):
+    if name == "RemoteWorker":
+        from .worker_remote import RemoteWorker
+        return RemoteWorker
+    raise AttributeError(f"module 'backend.worker' has no attribute {name!r}")

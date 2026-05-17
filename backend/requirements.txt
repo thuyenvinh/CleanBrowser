@@ -23,3 +23,6 @@ opentelemetry-instrumentation-fastapi>=0.48b0
 opentelemetry-instrumentation-psycopg2>=0.48b0
 opentelemetry-instrumentation-httpx>=0.48b0
 slowapi>=0.1.9
+# Optional - required only when running RemoteWorker / worker_server gRPC.
+grpcio>=1.60
+grpcio-tools>=1.60
