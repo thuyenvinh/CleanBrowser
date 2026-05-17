@@ -803,3 +803,25 @@ class TenantAppInstall(BaseModel):
     automation_id: str | None = None
     installed_at: datetime
     app_version: str | None = None
+
+
+class MarketplaceAppSubmit(BaseModel):
+    """Body of ``POST /api/marketplace/apps/submit`` (Phase 6 phase 2).
+
+    Validated server-side: the router additionally enforces slug
+    alphanumeric+dash, slug uniqueness, and (for ``kind='flow'``) the
+    presence of a parseable ``dsl_json`` with at least a ``nodes`` array.
+    """
+
+    slug: str = Field(min_length=3, max_length=80)
+    name: str = Field(min_length=1, max_length=200)
+    description: str | None = None
+    long_description: str | None = None
+    category: str | None = None
+    kind: Literal["flow", "script"]
+    dsl_json: dict | None = None
+    script_language: str | None = None
+    script_code: str | None = None
+    icon_url: str | None = None
+    creator_name: str | None = None
+    creator_url: str | None = None

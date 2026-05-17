@@ -94,8 +94,15 @@ def list_public_apps(
     ``ix_marketplace_apps_install_count`` partial index for the ordering
     so popularity sort stays O(public-rows). DSL / script payload is
     omitted to keep the listing payload small.
+
+    Phase 6 phase 2: also gates on ``moderation_status = 'approved'`` so
+    pending/rejected user submissions never leak into the public catalog.
+    The 0019 migration reshapes ``ix_marketplace_apps_category`` to match
+    this predicate, so the filter remains index-friendly.
     """
-    where_sql = "WHERE is_public = true"
+    where_sql = (
+        "WHERE is_public = true AND moderation_status = 'approved'"
+    )
     params: list[Any] = []
     if category is not None:
         where_sql += " AND category = %s"
@@ -310,6 +317,162 @@ def uninstall_app(workspace_id: str, app_id: str) -> bool:
     return removed
 
 
+# ---------------------------------------------------------------------------
+# Creator portal — user submissions + admin moderation queue
+# ---------------------------------------------------------------------------
+#
+# Phase 6 phase 2 surface. Submissions land in ``moderation_status='pending'``
+# with ``is_public=false`` so they're invisible to the public listing until
+# an admin approves. ``install_count`` starts at 0; ``is_official`` stays
+# false (seed migration is the only path to the official badge). Slug
+# uniqueness is enforced by the existing column-level UNIQUE constraint —
+# the HTTP layer does a friendlier pre-check via :func:`get_app_by_slug`.
+
+
+def submit_app(
+    slug: str,
+    name: str,
+    description: str | None,
+    kind: str,
+    dsl_json: dict[str, Any] | None,
+    script_language: str | None,
+    script_code: str | None,
+    creator_name: str | None,
+    creator_url: str | None,
+    submitted_by_user_id: str,
+    category: str | None = None,
+    long_description: str | None = None,
+    icon_url: str | None = None,
+) -> dict[str, Any]:
+    """Insert a user-submitted app row in 'pending' status.
+
+    Forces ``is_public=false`` and ``is_official=false`` regardless of
+    caller intent — promotion to public happens via :func:`approve_app`
+    only. Returns the freshly created row (including the generated UUID
+    and the server-side ``submitted_at`` timestamp).
+    """
+    import json
+
+    new_id = str(uuid.uuid4())
+    # psycopg2 doesn't auto-adapt dicts to JSONB; round-trip via json.dumps
+    # so the column receives a plain text payload it can cast.
+    dsl_payload = json.dumps(dsl_json) if dsl_json is not None else None
+
+    sql = (
+        "INSERT INTO marketplace_apps ("
+        "    id, slug, name, description, long_description, icon_url,"
+        "    category, kind, dsl_json, script_language, script_code,"
+        "    creator_name, creator_url, is_official, is_public,"
+        "    moderation_status, submitted_by_user_id, submitted_at"
+        ") VALUES ("
+        "    %s, %s, %s, %s, %s, %s,"
+        "    %s, %s, %s::jsonb, %s, %s,"
+        "    %s, %s, false, false,"
+        "    'pending', %s, now()"
+        ") RETURNING *"
+    )
+
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                sql,
+                (
+                    new_id,
+                    slug,
+                    name,
+                    description,
+                    long_description,
+                    icon_url,
+                    category,
+                    kind,
+                    dsl_payload,
+                    script_language,
+                    script_code,
+                    creator_name,
+                    creator_url,
+                    submitted_by_user_id,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row)  # type: ignore[return-value]
+
+
+def list_pending() -> list[dict[str, Any]]:
+    """Return apps awaiting moderation, newest first.
+
+    Hits the ``ix_marketplace_apps_moderation`` partial index added by
+    migration 0019. Includes ``rejected`` rows so the admin queue can
+    surface a "recently rejected" tab without an extra query.
+    """
+    sql = (
+        "SELECT * FROM marketplace_apps "
+        "WHERE moderation_status IN ('pending', 'rejected') "
+        "ORDER BY submitted_at DESC NULLS LAST"
+    )
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(sql)
+            rows = cur.fetchall()
+    return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
+
+
+def approve_app(
+    app_id: str, moderation_notes: str | None = None
+) -> dict[str, Any] | None:
+    """Flip a submitted app to approved + public.
+
+    Returns the updated row, or ``None`` if the id is bad / missing so
+    callers can map to 404 cleanly. ``updated_at`` is bumped so the
+    listing's secondary sort (name ASC) reflects the moderation action.
+    """
+    if not _safe_uuid(app_id):
+        return None
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "UPDATE marketplace_apps "
+                "SET moderation_status = 'approved', "
+                "    is_public = true, "
+                "    moderation_notes = %s, "
+                "    updated_at = now() "
+                "WHERE id = %s "
+                "RETURNING *",
+                (moderation_notes, app_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row)
+
+
+def reject_app(
+    app_id: str, moderation_notes: str
+) -> dict[str, Any] | None:
+    """Mark a submission rejected; keeps it invisible to the public listing.
+
+    Rejection notes are required at the HTTP layer (so the creator gets
+    actionable feedback); we still accept the parameter unconditionally
+    here to keep the data layer's contract simple.
+    """
+    if not _safe_uuid(app_id):
+        return None
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "UPDATE marketplace_apps "
+                "SET moderation_status = 'rejected', "
+                "    is_public = false, "
+                "    moderation_notes = %s, "
+                "    updated_at = now() "
+                "WHERE id = %s "
+                "RETURNING *",
+                (moderation_notes, app_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row)
+
+
 __all__ = [
     "list_public_apps",
     "get_app",
@@ -317,4 +480,8 @@ __all__ = [
     "list_installs",
     "install_app",
     "uninstall_app",
+    "submit_app",
+    "list_pending",
+    "approve_app",
+    "reject_app",
 ]
