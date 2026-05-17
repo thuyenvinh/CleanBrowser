@@ -4,10 +4,11 @@ Tóm tắt cho người tiếp nhận PR #1. Đọc khoảng 5 phút.
 
 ## Tình trạng
 
-- **Branch**: `claude/research-login-app-architecture-LNyv4` — 72 commit, sẵn sàng review/merge.
-- **Phases đã shipped**: 0, 1, 2, 3, 4, 5, 6 + Phase 7 baseline (observability + E2E + trial flow).
-- **Tests**: backend pytest **228 pass**, frontend vitest **16 pass**, E2E Playwright **10 scenario** scaffolded.
-- **LOC**: ~18,600 Python + ~8,400 TypeScript/TSX.
+- **Branch**: `claude/research-login-app-architecture-LNyv4` — 88 commit, sẵn sàng review/merge.
+- **Phases đã shipped**: 0, 1, 2, 3, 4, 5, 6, 7 — **100% theo roadmap ARCHITECTURE.md**.
+- **Tests**: backend pytest **238 pass**, frontend vitest **16 pass**, E2E Playwright **10 scenario** scaffolded.
+- **Migrations**: 21 (0001 → 0024).
+- **LOC**: ~25,000 (backend + frontend + desktop + tests + docs).
 
 ## Cấu trúc thư mục
 
