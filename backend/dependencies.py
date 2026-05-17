@@ -130,9 +130,45 @@ async def _check_websocket_origin(websocket: WebSocket) -> bool:
 def get_optional_user(request: Request) -> dict[str, Any] | None:
     """Return the user dict for the current request, or ``None`` if unauth'd.
 
-    Reads the ``session`` cookie, decodes the JWT, and looks up the user row.
+    Two auth paths, tried in order:
+
+    1. ``Authorization: Bearer <api_key>`` — programmatic clients (curl,
+       Playwright/Puppeteer scripts, CI/CD). The token is looked up via
+       :func:`db_auth.get_api_key_by_token`, which also bumps the key's
+       ``last_used_at`` as a side effect.
+    2. ``session`` cookie — interactive browser session (JWT issued by
+       ``/api/auth/{signup,login}``).
+
     Never raises — callers wanting a 401 should use :func:`get_current_user`.
     """
+    # ── Path 1: API key (Authorization: Bearer <token>) ────────────────────
+    # We deliberately ignore Bearer tokens that match the legacy AUTH_TOKEN —
+    # those are handled by the AuthMiddleware in :mod:`backend.main` and must
+    # not be misinterpreted as a per-user API key here.
+    auth_header = request.headers.get("authorization", "")
+    if auth_header.lower().startswith("bearer "):
+        api_token = auth_header[7:].strip()
+        if api_token:
+            try:
+                key_row = db_auth.get_api_key_by_token(api_token)
+            except Exception:
+                logger.exception("get_optional_user: api-key lookup failed")
+                key_row = None
+            if key_row:
+                try:
+                    user = db_auth.get_user(key_row["user_id"])
+                except Exception:
+                    logger.exception(
+                        "get_optional_user: db lookup failed for api-key user=%s",
+                        key_row.get("user_id"),
+                    )
+                    user = None
+                if user and user.get("status") == "active":
+                    request.state.user = user
+                    set_tenant(user.get("tenant_id"))
+                    return user
+
+    # ── Path 2: JWT session cookie ─────────────────────────────────────────
     token = request.cookies.get(SESSION_COOKIE)
     if not token:
         clear_tenant()

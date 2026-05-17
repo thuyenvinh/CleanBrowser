@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { Lock, PanelLeftClose, PanelLeft, Server, Globe, Workflow, CreditCard, Package } from "lucide-react";
+import { Lock, PanelLeftClose, PanelLeft, Server, Globe, Workflow, CreditCard, Package, Key } from "lucide-react";
 import { useProfiles } from "./hooks/useProfiles";
 import { useAuth } from "./hooks/useAuth";
 import { api, setOnUnauthorized, type ProfileCreateData } from "./lib/api";
@@ -17,13 +17,26 @@ import { AutomationPage } from "./components/AutomationPage";
 import { BillingPage } from "./components/BillingPage";
 import { MarketplacePage } from "./components/MarketplacePage";
 import { EmailVerificationBanner } from "./components/EmailVerificationBanner";
+import { StatusPage } from "./components/StatusPage";
+import { ApiKeysPage } from "./components/ApiKeysPage";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
 type AuthView = "login" | "signup" | "pricing";
-type Tab = "profiles" | "proxies" | "automations" | "marketplace" | "billing";
+type Tab = "profiles" | "proxies" | "automations" | "marketplace" | "billing" | "apikeys";
+
+// Public ``/status`` route is evaluated once at module-load before any
+// hooks run — keeps unauthenticated visitors out of the auth state
+// machine entirely and complies with the rules-of-hooks (we cannot
+// early-return from ``App`` after the first ``useState`` call).
+const IS_PUBLIC_STATUS_ROUTE =
+  typeof window !== "undefined" && window.location.pathname === "/status";
 
 export default function App() {
+  if (IS_PUBLIC_STATUS_ROUTE) {
+    return <StatusPage />;
+  }
+
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [authRequired, setAuthRequired] = useState(false);
   // Initial auth view: if the URL carries ``?pricing=1`` show the marketing
@@ -318,6 +331,14 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
                 <CreditCard className="h-3.5 w-3.5" />
                 Billing
               </button>
+              <button
+                onClick={() => setTab("apikeys")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "apikeys" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="API Keys"
+              >
+                <Key className="h-3.5 w-3.5" />
+                API Keys
+              </button>
             </div>
             {tab === "profiles" && selected && (
               <LaunchButton
@@ -362,6 +383,7 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
             <MarketplacePage currentWorkspaceId={currentWorkspaceId} />
           )}
           {tab === "billing" && <BillingPage />}
+          {tab === "apikeys" && <ApiKeysPage />}
           {tab === "profiles" && view === "empty" && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">

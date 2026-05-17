@@ -33,6 +33,9 @@ from ..auth_tokens import JWT_LIFETIME_SECONDS, encode_session
 from ..dependencies import SESSION_COOKIE, _is_https, get_current_user
 from ..rate_limit import limiter
 from ..models import (
+    ApiKeyCreateRequest,
+    ApiKeyCreateResponse,
+    ApiKeyPublic,
     EmailLoginRequest,
     LoginRequest,
     MfaDisableRequest,
@@ -648,3 +651,113 @@ async def oauth_callback(
     )
     _clear_oauth_state_cookie(resp)
     return resp
+
+
+# ---------------------------------------------------------------------------
+# API keys — user-managed personal access tokens (Wave 2 closure)
+#
+# Backed by the ``user_api_keys`` table from migration 0003 and the
+# ``create_api_key`` / ``get_api_key_by_token`` / ``revoke_api_key`` helpers
+# in :mod:`backend.db_auth`. The dependency :func:`get_optional_user` also
+# accepts these tokens via ``Authorization: Bearer <token>``, so a user can
+# script the same operations they perform from the browser without sharing
+# their password / JWT session cookie.
+#
+# Plaintext token is returned EXACTLY ONCE — on the POST response. We never
+# persist the plaintext; only its SHA-256 lives in ``user_api_keys.key_hash``.
+# ---------------------------------------------------------------------------
+
+
+def _list_api_keys_for_user(user_id: str) -> list[dict[str, Any]]:
+    """Return all API key rows owned by ``user_id`` (active + revoked).
+
+    Inlined here (rather than added to :mod:`backend.db_auth`) so this wave
+    doesn't churn the data layer module — see RULES in the task brief.
+    """
+    import psycopg2.extras
+
+    from ..database import get_db
+    from ..db_auth import _row_to_dict
+
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, name, scopes, last_used_at, created_at, revoked_at
+                   FROM user_api_keys
+                   WHERE user_id = %s
+                   ORDER BY created_at DESC""",
+                (user_id,),
+            )
+            return [_row_to_dict(r) for r in cur.fetchall()]  # type: ignore[misc]
+
+
+def _api_key_public(row: dict[str, Any]) -> dict[str, Any]:
+    """Project a ``user_api_keys`` row to the public-safe shape."""
+    return ApiKeyPublic(
+        id=row["id"],
+        name=row["name"],
+        scopes=list(row.get("scopes") or []),
+        last_used_at=row.get("last_used_at"),
+        created_at=row["created_at"],
+        revoked_at=row.get("revoked_at"),
+    ).model_dump()
+
+
+@router.get("/api-keys")
+async def list_api_keys(user: dict[str, Any] = Depends(get_current_user)):
+    """Return the caller's API keys — never includes plaintext tokens."""
+    rows = _list_api_keys_for_user(user["id"])
+    return [_api_key_public(r) for r in rows]
+
+
+@router.post("/api-keys", status_code=status.HTTP_201_CREATED, response_model=ApiKeyCreateResponse)
+@limiter.limit("20/hour")
+async def create_api_key_route(
+    request: Request,
+    body: ApiKeyCreateRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    """Mint a new API key. Plaintext token is shown ONCE in the response."""
+    name = body.name.strip()
+    if not name:
+        raise HTTPException(status_code=400, detail="name required")
+    scopes = body.scopes if body.scopes is not None else ["*"]
+    try:
+        record, plaintext = db_auth.create_api_key(
+            user["id"], name=name, scopes=scopes
+        )
+    except Exception:
+        logger.exception("create_api_key failed for user=%s", user["id"])
+        raise HTTPException(status_code=500, detail="failed to create api key")
+    return ApiKeyCreateResponse(
+        key=ApiKeyPublic(
+            id=record["id"],
+            name=record["name"],
+            scopes=list(record.get("scopes") or []),
+            last_used_at=record.get("last_used_at"),
+            created_at=record["created_at"],
+            revoked_at=record.get("revoked_at"),
+        ),
+        token=plaintext,
+        warning=(
+            "This token will only be shown once. Save it securely — "
+            "you will not be able to retrieve it again."
+        ),
+    )
+
+
+@router.delete("/api-keys/{key_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def revoke_api_key_route(
+    key_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    """Revoke an API key the caller owns.
+
+    Returns 404 (not 403) when the key belongs to someone else so we don't
+    leak the existence of keys across users.
+    """
+    rows = _list_api_keys_for_user(user["id"])
+    if not any(r["id"] == key_id for r in rows):
+        raise HTTPException(status_code=404, detail="api key not found")
+    db_auth.revoke_api_key(key_id)
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

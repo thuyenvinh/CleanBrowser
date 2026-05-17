@@ -284,6 +284,27 @@ class ApiKeyPublic(BaseModel):
     scopes: list[str]
     last_used_at: str | None = None
     created_at: str
+    revoked_at: str | None = None
+
+
+class ApiKeyCreateRequest(BaseModel):
+    """Body of ``POST /api/auth/api-keys``."""
+
+    name: str = Field(min_length=1, max_length=100)
+    scopes: list[str] | None = None
+
+
+class ApiKeyCreateResponse(BaseModel):
+    """Reply from ``POST /api/auth/api-keys``.
+
+    ``token`` is the plaintext API key — shown ONLY on the create response,
+    never persisted in plaintext and never returned again. The frontend MUST
+    display the warning prominently so users save it before dismissing.
+    """
+
+    key: ApiKeyPublic
+    token: str
+    warning: str
 
 
 class AuditLog(BaseModel):
@@ -504,6 +525,28 @@ class ScheduleUpdate(BaseModel):
     enabled: bool | None = None
     timezone: str | None = None
     profile_id: str | None = None
+
+
+class AutomationWebhook(BaseModel):
+    """One ``automation_webhooks`` row.
+
+    ``token`` is the URL-embedded secret that authenticates the public
+    POST receiver; treat it as a credential and avoid logging it. We DO
+    return it from the list endpoint so the management UI can render the
+    full webhook URL with a Copy button — disable or delete the webhook
+    if the token leaks.
+    """
+
+    id: str
+    automation_id: str
+    token: str
+    name: str | None = None
+    enabled: bool
+    profile_id: str | None = None
+    created_at: datetime
+    created_by_user_id: str | None = None
+    last_triggered_at: datetime | None = None
+    trigger_count: int
 
 
 # ---------------------------------------------------------------------------
@@ -825,6 +868,54 @@ class MarketplaceAppSubmit(BaseModel):
     icon_url: str | None = None
     creator_name: str | None = None
     creator_url: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Marketplace revenue share (Phase 6 phase 3) — schema in migration 0025.
+#
+# Surfaces ``marketplace_earnings`` rows and the dashboard summary blob.
+# ``creator_cents`` / ``platform_cents`` are snapshotted at event time so
+# re-pricing the app or changing ``revenue_share_pct`` later cannot rewrite
+# historical bills (same audit-ledger discipline as ``OverageEvent`` below).
+# ---------------------------------------------------------------------------
+
+
+class MarketplaceEarning(BaseModel):
+    """One row of ``marketplace_earnings``.
+
+    ``status`` walks ``pending → available → paid_out``; ``refunded`` is
+    terminal. ``available_at`` is the timestamp at which the payout worker
+    promotes the row out of escrow (default = ``created_at + 14 days``).
+    """
+
+    id: str
+    app_id: str
+    install_id: str | None = None
+    creator_user_id: str
+    buyer_tenant_id: str
+    gross_cents: int
+    creator_cents: int
+    platform_cents: int
+    currency: str
+    status: str
+    available_at: datetime | None = None
+    paid_out_at: datetime | None = None
+    created_at: datetime
+
+
+class CreatorSummary(BaseModel):
+    """Headline counters for the creator dashboard.
+
+    Three monetary buckets mirror the lifecycle statuses; ``total_apps`` /
+    ``total_installs`` come from a separate aggregate over
+    ``marketplace_apps`` (see :func:`backend.db_marketplace.creator_summary`).
+    """
+
+    total_apps: int
+    total_installs: int
+    pending_cents: int
+    available_cents: int
+    paid_out_cents: int
 
 
 # ---------------------------------------------------------------------------
