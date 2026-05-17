@@ -154,7 +154,116 @@ def _to_dict(row: Any) -> dict:
         "profile_id",
         "created_by_user_id",
         "created_by_session_id",
+        # Added by migration 0021 for the diff-snapshot chain. Stringify
+        # for the same json-safety reason as the other UUID columns.
+        "parent_version_id",
     ):
         if d.get(k) is not None:
             d[k] = str(d[k])
     return d
+
+
+# ---------------------------------------------------------------------------
+# File-level diff snapshot helpers (migration 0021).
+# ---------------------------------------------------------------------------
+#
+# These functions back the ``snapshot_to_storage_diff`` / ``restore_from_
+# storage_diff`` flow in :mod:`backend.profile_snapshot`. They are kept
+# here rather than in a sibling module so all writes against the
+# ``profile_versions`` family of tables share one transactional surface
+# and one connection-pool entry point (``get_db``).
+
+
+def record_version_files(
+    version_id: str, files: dict[str, dict]
+) -> int:
+    """Bulk-insert per-file metadata captured by a snapshot.
+
+    ``files`` is the manifest's ``files`` dict — ``{rel_path: {sha256,
+    size}}`` — produced by :func:`backend.snapshot_diff.pack_diff` (or
+    by the equivalent walk for a full snapshot). One round-trip via
+    :func:`psycopg2.extras.execute_values` so even a 50k-file Chromium
+    profile lands in a single network hop. Returns the number of rows
+    inserted (used by callers to log "snapshotted N files").
+    """
+
+    if not files:
+        return 0
+    from psycopg2.extras import execute_values
+
+    rows = [
+        (version_id, path, meta["sha256"], meta["size"])
+        for path, meta in files.items()
+    ]
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            execute_values(
+                cur,
+                "INSERT INTO profile_version_files "
+                "(version_id, path, sha256, size_bytes) VALUES %s",
+                rows,
+            )
+    return len(rows)
+
+
+def get_version_files(version_id: str) -> list[dict]:
+    """Return ``[{path, sha256, size_bytes}, ...]`` for a snapshot.
+
+    Used by the diff packer to learn the previous version's per-file
+    SHA-256s without having to download and re-hash the parent blob.
+    Returns an empty list (not None) for versions that have no recorded
+    file metadata — e.g. snapshots created before migration 0021.
+    """
+
+    with get_db() as conn:
+        with conn.cursor(
+            cursor_factory=psycopg2.extras.RealDictCursor
+        ) as cur:
+            cur.execute(
+                "SELECT path, sha256, size_bytes "
+                "FROM profile_version_files WHERE version_id = %s",
+                (version_id,),
+            )
+            return [dict(r) for r in cur.fetchall()]
+
+
+def mark_diff(version_id: str, parent_id: str) -> None:
+    """Flip ``snapshot_kind`` to ``'diff'`` and link the parent version.
+
+    Done as a separate UPDATE rather than passed into
+    :func:`create_version` so the existing constructor signature (and
+    the rows produced by full snapshots) stays untouched — callers that
+    don't know about diffs keep working exactly as before.
+    """
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE profile_versions "
+                "SET snapshot_kind = 'diff', parent_version_id = %s "
+                "WHERE id = %s",
+                (parent_id, version_id),
+            )
+
+
+def find_full_snapshot_before(version_id: str) -> dict | None:
+    """Walk back the parent chain from ``version_id`` to the nearest full.
+
+    Returns the full-snapshot row, or ``None`` if the chain is broken
+    (e.g. an ancestor was deleted and its ``parent_version_id`` SET
+    NULL'd out from under us). The walk is bounded at 100 hops as a
+    sanity guard against pathological chains; in practice ``full_every``
+    in the snapshot scheduler keeps depth in the single digits.
+    """
+
+    cur_row = get_version(version_id)
+    hops = 0
+    while cur_row is not None and hops < 100:
+        if cur_row.get("snapshot_kind", "full") == "full":
+            return cur_row
+        parent_id = cur_row.get("parent_version_id")
+        if not parent_id:
+            return None
+        cur_row = get_version(parent_id)
+        hops += 1
+    return None

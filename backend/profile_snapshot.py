@@ -180,6 +180,327 @@ async def snapshot_to_storage(
     return version_row
 
 
+async def snapshot_to_storage_diff(
+    profile_id: str,
+    user_data_dir: str | Path,
+    tenant_id: str,
+    session_id: str | None = None,
+    user_id: str | None = None,
+    notes: str | None = None,
+    full_every: int = 10,
+) -> dict[str, Any] | None:
+    """Diff-aware snapshot — uploads only files changed since the parent.
+
+    Falls back to a full snapshot in any of these cases:
+
+    * No previous version exists for the profile (cold start).
+    * The chain of diffs back to the nearest full is already
+      ``full_every`` long. Bounding the chain keeps restore latency
+      predictable (otherwise a long-lived profile would accumulate
+      hundreds of diffs and replay would dominate the launch time).
+    * The previous version exists but has no recorded file metadata
+      (e.g. it was a full snapshot from before migration 0021). We can't
+      compute a meaningful diff against an unknown manifest, so we take
+      a fresh full and the next snapshot can diff from there.
+
+    Returns the freshly-created ``profile_versions`` row dict on success,
+    ``None`` if any step failed OR if there was nothing to snapshot
+    (no files changed since the parent — a no-op is reported as None
+    so callers can distinguish "saved a snapshot" from "nothing to do").
+    """
+
+    import json
+
+    from backend import db_versions, snapshot_diff, storage
+
+    udir = Path(user_data_dir)
+    if not udir.exists():
+        logger.warning(
+            "snapshot_diff: user_data_dir missing for %s (%s)",
+            profile_id, udir,
+        )
+        return None
+
+    loop = asyncio.get_event_loop()
+
+    # Decide full vs diff up front so we only do the cheap DB lookups
+    # before the expensive walk/hash phase.
+    try:
+        parent = db_versions.get_latest_version(profile_id)
+    except Exception:
+        logger.exception(
+            "snapshot_diff: get_latest_version failed for %s", profile_id
+        )
+        return None
+
+    use_full = parent is None
+    prev_files_meta: list[dict] = []
+    if parent and not use_full:
+        # Chain-depth check: walk back via the helper added in 0021. If
+        # the nearest full is too far away, force a fresh full so restore
+        # doesn't accumulate unbounded replay work.
+        try:
+            full_ancestor = db_versions.find_full_snapshot_before(parent["id"])
+        except Exception:
+            logger.exception(
+                "snapshot_diff: chain walk failed for %s", profile_id
+            )
+            return None
+        if full_ancestor is None:
+            # Broken chain — safest path is a fresh full snapshot.
+            use_full = True
+        else:
+            # Count how many diffs sit between ``parent`` (inclusive) and
+            # the full ancestor. parent itself counts as a hop only when
+            # it's a diff; if parent IS the full, depth is 0 and we
+            # should diff against it on the next snapshot.
+            depth = 0
+            cur = parent
+            while cur and cur.get("id") != full_ancestor.get("id"):
+                depth += 1
+                pid = cur.get("parent_version_id")
+                cur = db_versions.get_version(pid) if pid else None
+                if depth > 50:
+                    break
+            if depth >= full_every:
+                use_full = True
+            else:
+                try:
+                    prev_files_meta = db_versions.get_version_files(
+                        parent["id"]
+                    )
+                except Exception:
+                    logger.exception(
+                        "snapshot_diff: get_version_files failed for %s",
+                        parent["id"],
+                    )
+                    return None
+                if not prev_files_meta:
+                    # Parent predates the per-file manifest — can't diff.
+                    use_full = True
+
+    if use_full:
+        # Reuse the existing full-snapshot path but ALSO record the
+        # per-file manifest so the *next* call can diff against this
+        # full. Without that, the diff flow would degenerate to "always
+        # take a full" on profiles whose first snapshot was full.
+        row = await snapshot_to_storage(
+            profile_id=profile_id,
+            user_data_dir=str(udir),
+            tenant_id=tenant_id,
+            session_id=session_id,
+            user_id=user_id,
+            notes=notes,
+        )
+        if row is None:
+            return None
+        try:
+            current = await loop.run_in_executor(
+                None, snapshot_diff._walk_user_data, udir
+            )
+            files_meta = {
+                p: {"sha256": sha, "size": size}
+                for p, (sha, size) in current.items()
+            }
+            db_versions.record_version_files(row["id"], files_meta)
+        except Exception:
+            # Recording the manifest is best-effort: if it fails the
+            # full snapshot itself is still valid, the next call will
+            # just have to take another full instead of a diff.
+            logger.exception(
+                "snapshot_diff: record_version_files failed for full %s",
+                row.get("id"),
+            )
+        return row
+
+    # --- diff path ---
+    prev_files_sha = {row["path"]: row["sha256"] for row in prev_files_meta}
+
+    try:
+        compressed, manifest, changed = await loop.run_in_executor(
+            None, snapshot_diff.pack_diff, udir, prev_files_sha,
+        )
+    except Exception:
+        logger.exception("snapshot_diff: pack_diff failed for %s", profile_id)
+        return None
+
+    if not changed:
+        logger.info(
+            "snapshot_diff: no changes since v%s for profile %s — skipping",
+            parent["version"], profile_id,
+        )
+        return None
+
+    next_version = parent["version"] + 1
+    # Storage layout: parallel to the v{n}.tar.zst full keys but with a
+    # ``.diff`` infix so a glance at the bucket tells full vs diff. The
+    # manifest rides alongside under ``.manifest.json`` for offline
+    # debugging / out-of-band inspection (the DB is still authoritative).
+    base_key = storage.make_profile_snapshot_key(
+        tenant_id, profile_id, next_version
+    )
+    diff_key = base_key.replace(".tar.zst", ".diff.tar.zst")
+    manifest_key = base_key.replace(".tar.zst", ".manifest.json")
+
+    sha = hashlib.sha256(compressed).hexdigest()
+    try:
+        storage.upload(diff_key, compressed)
+        storage.upload(manifest_key, json.dumps(manifest).encode())
+    except Exception:
+        logger.exception(
+            "snapshot_diff: upload failed for %s key=%s", profile_id, diff_key
+        )
+        return None
+
+    try:
+        version_row = db_versions.create_version(
+            profile_id=profile_id,
+            storage_key=diff_key,
+            size_bytes=len(compressed),
+            sha256=sha,
+            created_by_user_id=user_id,
+            created_by_session_id=session_id,
+            notes=notes,
+        )
+        db_versions.mark_diff(version_row["id"], parent_id=parent["id"])
+        # Record the FULL current file map (not just ``changed``) so the
+        # next diff knows the complete state without walking the chain.
+        db_versions.record_version_files(version_row["id"], manifest["files"])
+    except Exception:
+        logger.exception("snapshot_diff: db record failed for %s", profile_id)
+        # Best-effort cleanup of both orphaned objects.
+        for k in (diff_key, manifest_key):
+            try:
+                storage.delete(k)
+            except Exception:
+                logger.debug("snapshot_diff: orphan cleanup failed for %s", k)
+        return None
+
+    logger.info(
+        "snapshot_diff: profile %s v%s saved (%d bytes, %d/%d files changed)",
+        profile_id, version_row.get("version"),
+        len(compressed), len(changed), len(manifest["files"]),
+    )
+    return version_row
+
+
+async def restore_from_storage_diff(
+    profile_id: str,
+    version_id: str | None,
+    user_data_dir: str | Path,
+) -> bool:
+    """Restore a profile by replaying full+diff chain into ``user_data_dir``.
+
+    Walks back from ``version_id`` (or latest) until it hits a full
+    snapshot, then applies each diff in ancestor→descendant order onto
+    a freshly-emptied ``user_data_dir``. Returns ``True`` on success,
+    ``False`` if any download/unpack step failed or if the chain is
+    broken (an ancestor's ``parent_version_id`` is NULL but its kind is
+    still ``'diff'``).
+    """
+
+    import shutil
+
+    from backend import db_versions, snapshot_diff, storage
+
+    try:
+        if version_id:
+            target = db_versions.get_version(version_id)
+        else:
+            target = db_versions.get_latest_version(profile_id)
+    except Exception:
+        logger.exception(
+            "restore_diff: lookup failed for %s version=%s",
+            profile_id, version_id,
+        )
+        return False
+    if not target:
+        logger.warning(
+            "restore_diff: no version found for %s (version_id=%s)",
+            profile_id, version_id,
+        )
+        return False
+
+    # Build the chain by walking parent pointers back to the nearest full.
+    chain: list[dict] = []
+    cur = target
+    while cur is not None:
+        chain.append(cur)
+        if cur.get("snapshot_kind", "full") == "full":
+            break
+        parent_id = cur.get("parent_version_id")
+        if not parent_id:
+            logger.error(
+                "restore_diff: broken chain — version %s is a diff with no "
+                "parent_version_id",
+                cur.get("id"),
+            )
+            return False
+        try:
+            cur = db_versions.get_version(parent_id)
+        except Exception:
+            logger.exception(
+                "restore_diff: parent lookup failed for %s", parent_id
+            )
+            return False
+        if cur is None:
+            logger.error(
+                "restore_diff: broken chain — parent %s missing", parent_id
+            )
+            return False
+        if len(chain) > 100:
+            # Same safety bound as the chain-depth helper.
+            logger.error(
+                "restore_diff: chain too deep for %s, aborting", profile_id
+            )
+            return False
+    chain.reverse()  # ancestor (full) → descendant (target)
+
+    udir = Path(user_data_dir)
+    loop = asyncio.get_event_loop()
+
+    # Wipe target dir for clean full-restore semantics. The diff stream
+    # is overwrite-only, so without this a previous restore's files
+    # could survive into a snapshot they were never part of.
+    if udir.exists():
+        try:
+            shutil.rmtree(udir)
+        except Exception:
+            logger.exception(
+                "restore_diff: wipe failed for %s", udir
+            )
+            return False
+    udir.mkdir(parents=True, exist_ok=True)
+
+    for v in chain:
+        key = v.get("storage_key")
+        try:
+            data = storage.download(key)
+        except Exception:
+            logger.exception(
+                "restore_diff: download failed key=%s", key
+            )
+            return False
+        try:
+            if v.get("snapshot_kind", "full") == "full":
+                await loop.run_in_executor(None, unpack, data, str(udir))
+            else:
+                await loop.run_in_executor(
+                    None, snapshot_diff.unpack_diff, data, udir
+                )
+        except Exception:
+            logger.exception(
+                "restore_diff: unpack failed at version %s", v.get("id")
+            )
+            return False
+
+    logger.info(
+        "restore_diff: profile %s restored via %d-link chain (target v%s)",
+        profile_id, len(chain), target.get("version"),
+    )
+    return True
+
+
 async def restore_from_storage(
     profile_id: str,
     version_id: str | None,
