@@ -377,7 +377,7 @@ class BrowserManager:
         try:
             from . import database as db
             from . import db_auth
-            from .profile_snapshot import snapshot_to_storage
+            from .profile_snapshot import snapshot_to_storage_diff as snapshot_to_storage
 
             profile = db.get_profile(profile_id)
             if not profile:
