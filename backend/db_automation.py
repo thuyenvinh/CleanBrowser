@@ -15,6 +15,7 @@ See ``docs/ARCHITECTURE`` §2.6.
 from __future__ import annotations
 
 import datetime
+import secrets
 import uuid
 from typing import Any
 
@@ -743,6 +744,158 @@ def list_due_schedules(now: datetime.datetime) -> list[dict[str, Any]]:
     return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
 
 
+# ---------------------------------------------------------------------------
+# automation_webhooks
+#
+# Token-authenticated trigger receivers. Each row carries an opaque
+# ``token`` (random :func:`secrets.token_urlsafe(32)`) that is embedded in
+# the public URL — anyone holding it can fire a run for the parent
+# automation, so deletion / disabling is the revocation mechanism. The
+# receiver lives in :mod:`backend.routers.webhooks` and runs its token
+# lookup inside :func:`backend.middleware_rls.system_context` (no
+# authenticated user means no tenant binding to filter by).
+# ---------------------------------------------------------------------------
+
+
+def create_webhook(
+    automation_id: str,
+    name: str | None = None,
+    profile_id: str | None = None,
+    created_by_user_id: str | None = None,
+) -> dict[str, Any]:
+    """Create a webhook trigger for ``automation_id``.
+
+    The token is generated server-side with :func:`secrets.token_urlsafe`
+    so callers never have to (and never should) supply one. 32 bytes of
+    entropy → ≈43 base64-url characters, which is well above the
+    "guessable" threshold for an anonymous trigger.
+    """
+    if not _safe_uuid(automation_id):
+        raise ValueError(f"invalid automation_id {automation_id!r}")
+    webhook_id = str(uuid.uuid4())
+    token = secrets.token_urlsafe(32)
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO automation_webhooks (
+                       id, automation_id, token, name,
+                       profile_id, created_by_user_id
+                   ) VALUES (%s, %s, %s, %s, %s, %s)
+                   RETURNING *""",
+                (
+                    webhook_id,
+                    automation_id,
+                    token,
+                    name,
+                    profile_id,
+                    created_by_user_id,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row)  # type: ignore[return-value]
+
+
+def list_webhooks(automation_id: str) -> list[dict[str, Any]]:
+    """List all webhooks (enabled + disabled) for ``automation_id``."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM automation_webhooks
+                   WHERE automation_id = %s
+                   ORDER BY created_at ASC""",
+                (automation_id,),
+            )
+            rows = cur.fetchall()
+    return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
+
+
+def get_webhook(webhook_id: str) -> dict[str, Any] | None:
+    if not _safe_uuid(webhook_id):
+        return None
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM automation_webhooks WHERE id = %s",
+                (webhook_id,),
+            )
+            return _row_to_dict(cur.fetchone())
+
+
+def get_webhook_by_token(token: str) -> dict[str, Any] | None:
+    """Resolve a webhook by token. Ignores ``enabled`` — the receiver
+    checks that flag itself so it can return a distinct 404 vs. "found
+    but disabled" without having to fall back to ``get_webhook``."""
+    if not token:
+        return None
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT * FROM automation_webhooks WHERE token = %s",
+                (token,),
+            )
+            return _row_to_dict(cur.fetchone())
+
+
+def delete_webhook(webhook_id: str) -> bool:
+    """Hard-delete a webhook row (revokes the token)."""
+    if not _safe_uuid(webhook_id):
+        return False
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM automation_webhooks WHERE id = %s",
+                (webhook_id,),
+            )
+            removed = cur.rowcount > 0
+        conn.commit()
+    return removed
+
+
+def mark_webhook_triggered(webhook_id: str) -> None:
+    """Bump ``trigger_count`` and stamp ``last_triggered_at = now()``.
+
+    Called from the public receiver after it has successfully enqueued a
+    run. Single statement so a concurrent trigger can't race the counter.
+    """
+    if not _safe_uuid(webhook_id):
+        return
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE automation_webhooks SET
+                       trigger_count = trigger_count + 1,
+                       last_triggered_at = now()
+                   WHERE id = %s""",
+                (webhook_id,),
+            )
+        conn.commit()
+
+
+def toggle_webhook(
+    webhook_id: str, enabled: bool
+) -> dict[str, Any] | None:
+    """Flip ``enabled`` for ``webhook_id``.
+
+    Soft-disable preserves ``trigger_count`` / ``last_triggered_at`` so
+    operators can re-enable a paused integration without losing history.
+    """
+    if not _safe_uuid(webhook_id):
+        return None
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """UPDATE automation_webhooks
+                   SET enabled = %s
+                   WHERE id = %s
+                   RETURNING *""",
+                (enabled, webhook_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row)
+
+
 __all__ = [
     "VALID_KINDS",
     "VALID_SCRIPT_LANGUAGES",
@@ -776,4 +929,12 @@ __all__ = [
     "set_schedule_next_fire",
     "mark_schedule_fired",
     "list_due_schedules",
+    # webhooks
+    "create_webhook",
+    "list_webhooks",
+    "get_webhook",
+    "get_webhook_by_token",
+    "delete_webhook",
+    "mark_webhook_triggered",
+    "toggle_webhook",
 ]

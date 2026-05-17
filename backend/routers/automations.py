@@ -52,7 +52,7 @@ from ..dependencies import (
     check_role_for_workspace,
     get_current_user,
 )
-from ..models import Schedule, ScheduleCreate, ScheduleUpdate
+from ..models import AutomationWebhook, Schedule, ScheduleCreate, ScheduleUpdate
 
 logger = logging.getLogger("cloakbrowser.automation")
 
@@ -700,4 +700,69 @@ def delete_schedule_route(
         s["automation_id"], user, ROLE_LEVEL["editor"]
     )
     _db().delete_schedule(schedule_id)
+    return Response(status_code=204)
+
+
+# ── Webhooks ─────────────────────────────────────────────────────────────────
+#
+# Management endpoints for the public POST receiver in
+# :mod:`backend.routers.webhooks`. Auth/RBAC mirrors the schedules
+# section above: viewer+ to list, editor+ to create/delete. The receiver
+# itself is unauthenticated — the URL-embedded token IS the credential —
+# so it's deliberately housed in a separate router file (kept off the
+# auth-gated ``/api/automations`` prefix).
+
+
+class WebhookCreate(BaseModel):
+    name: str | None = Field(default=None, max_length=200)
+    profile_id: str | None = None
+
+
+@router.get(
+    "/{automation_id}/webhooks", response_model=list[AutomationWebhook]
+)
+def list_webhooks_route(
+    automation_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    _load_and_check_automation(automation_id, user, ROLE_LEVEL["viewer"])
+    rows = _db().list_webhooks(automation_id)
+    return [AutomationWebhook(**r) for r in rows]
+
+
+@router.post(
+    "/{automation_id}/webhooks",
+    status_code=201,
+    response_model=AutomationWebhook,
+)
+def create_webhook_route(
+    automation_id: str,
+    body: WebhookCreate,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    _load_and_check_automation(automation_id, user, ROLE_LEVEL["editor"])
+    try:
+        row = _db().create_webhook(
+            automation_id=automation_id,
+            name=body.name,
+            profile_id=body.profile_id,
+            created_by_user_id=user.get("id"),
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    return AutomationWebhook(**row)
+
+
+@router.delete("/webhooks/{webhook_id}", status_code=204)
+def delete_webhook_route(
+    webhook_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    w = _db().get_webhook(webhook_id)
+    if not w:
+        raise HTTPException(status_code=404, detail="Webhook not found")
+    _load_and_check_automation(
+        w["automation_id"], user, ROLE_LEVEL["editor"]
+    )
+    _db().delete_webhook(webhook_id)
     return Response(status_code=204)

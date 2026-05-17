@@ -233,3 +233,46 @@ export const schedule = {
   delete: (id: string) =>
     request<void>(`/api/automations/schedules/${id}`, { method: "DELETE" }),
 };
+
+// ---------------------------------------------------------------------------
+// Webhooks (token-authenticated triggers)
+// ---------------------------------------------------------------------------
+//
+// One row per webhook trigger bound to an automation. The ``token`` is the
+// URL-embedded credential — external services POST to
+// ``/api/webhooks/automation/{token}`` to fire a run. The list endpoint
+// returns the token plaintext so the UI can render the full URL with a
+// Copy button; treat it as a secret and rotate (delete + recreate) if
+// it ever leaks.
+
+export interface AutomationWebhook {
+  id: string;
+  automation_id: string;
+  token: string;
+  name: string | null;
+  enabled: boolean;
+  profile_id: string | null;
+  created_at: string;
+  created_by_user_id: string | null;
+  last_triggered_at: string | null;
+  trigger_count: number;
+}
+
+export interface WebhookCreateInput {
+  name?: string | null;
+  profile_id?: string | null;
+}
+
+export const webhooks = {
+  list: (automationId: string) =>
+    request<AutomationWebhook[]>(
+      `/api/automations/${automationId}/webhooks`,
+    ),
+  create: (automationId: string, input: WebhookCreateInput) =>
+    request<AutomationWebhook>(
+      `/api/automations/${automationId}/webhooks`,
+      { method: "POST", body: input },
+    ),
+  delete: (id: string) =>
+    request<void>(`/api/automations/webhooks/${id}`, { method: "DELETE" }),
+};

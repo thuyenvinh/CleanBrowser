@@ -3,6 +3,7 @@ import { ListChecks, Play, Save, Sparkles, Trash2 } from "lucide-react";
 import {
   ai as aiApi,
   automation as automationApi,
+  webhooks as webhooksApi,
   type Automation,
   type AutomationCreateInput,
   type AutomationDetail,
@@ -11,6 +12,7 @@ import {
   type AutomationScriptLanguage,
   type AutomationUpdateInput,
   type AutomationVersion,
+  type AutomationWebhook,
 } from "../lib/automation";
 import type { Profile } from "../lib/api";
 import { ScheduleList } from "./ScheduleList";
@@ -567,6 +569,9 @@ export function AutomationForm({
                 workspaceProfiles={profiles}
               />
             </section>
+            <section>
+              <WebhooksSection automationId={automation.id} />
+            </section>
           </>
         )}
       </div>
@@ -691,6 +696,41 @@ function SchedulesSection({
         onUpdate={update}
         onDelete={remove}
       />
+    </div>
+  );
+}
+
+function WebhooksSection({ automationId }: { automationId: string }) {
+  const [rows, setRows] = useState<AutomationWebhook[]>([]);
+  const [name, setName] = useState("");
+  const refresh = useCallback(() => {
+    webhooksApi.list(automationId).then(setRows).catch(() => setRows([]));
+  }, [automationId]);
+  useEffect(() => { refresh(); }, [refresh]);
+  const urlFor = (t: string) => `${window.location.origin}/api/webhooks/automation/${t}`;
+  const onCreate = async () => { await webhooksApi.create(automationId, { name: name || null }); setName(""); refresh(); };
+  const onDelete = async (id: string) => { await webhooksApi.delete(id); refresh(); };
+  return (
+    <div>
+      <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Webhooks</h3>
+      <ul className="space-y-2 mb-3">
+        {rows.length === 0 && <li className="text-xs text-gray-500">No webhooks yet.</li>}
+        {rows.map((w) => (
+          <li key={w.id} className="border border-border rounded p-2 text-xs flex items-start gap-2">
+            <div className="flex-1 min-w-0">
+              <div className="font-medium truncate">{w.name || "(unnamed)"}</div>
+              <div className="font-mono text-gray-400 truncate">{urlFor(w.token)}</div>
+              <div className="text-gray-500 mt-1">Triggered {w.trigger_count}× {w.last_triggered_at ? `· last ${new Date(w.last_triggered_at).toLocaleString()}` : ""}</div>
+            </div>
+            <button type="button" className="btn-secondary" onClick={() => navigator.clipboard.writeText(urlFor(w.token))}>Copy</button>
+            <button type="button" className="btn-secondary text-red-400" onClick={() => onDelete(w.id)}>Delete</button>
+          </li>
+        ))}
+      </ul>
+      <div className="flex gap-2">
+        <input className="input text-xs flex-1" placeholder="Webhook name (optional)" value={name} onChange={(e) => setName(e.target.value)} />
+        <button type="button" className="btn-primary text-xs" onClick={onCreate}>+ Create webhook</button>
+      </div>
     </div>
   );
 }
