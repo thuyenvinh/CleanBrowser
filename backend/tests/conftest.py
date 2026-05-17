@@ -9,6 +9,13 @@ runs. No SQLite, no temp DB files.
 from __future__ import annotations
 
 import os
+
+# Disable per-IP rate limiting in tests — many tests hammer auth endpoints
+# in tight loops and would otherwise trip the 5/hour signup or 10/min login
+# caps. Must be set BEFORE backend modules are imported because
+# ``backend.rate_limit`` reads it at import time.
+os.environ.setdefault("RATE_LIMIT_ENABLED", "false")
+
 import sys
 import types
 from pathlib import Path

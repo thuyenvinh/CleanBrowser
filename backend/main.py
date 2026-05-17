@@ -35,6 +35,7 @@ from .dependencies import (
     browser_mgr,
 )
 from .middleware_audit import AuditMiddleware
+from .rate_limit import limiter, RateLimitExceeded, _rate_limit_exceeded_handler
 from .routers import ai as ai_router
 from .routers import auth as auth_router
 from .routers import automations as automations_router
@@ -160,6 +161,8 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="CloakBrowser Manager", lifespan=lifespan)
+app.state.limiter = limiter
+app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Starlette applies middleware in reverse registration order (last-registered
 # is outermost). We want AuthMiddleware to run BEFORE AuditMiddleware so the
 # auth dependency has a chance to populate ``request.state.user`` that

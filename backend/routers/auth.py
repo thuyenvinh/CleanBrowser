@@ -31,6 +31,7 @@ from pydantic import ValidationError
 from .. import db_auth, email_sender
 from ..auth_tokens import JWT_LIFETIME_SECONDS, encode_session
 from ..dependencies import SESSION_COOKIE, _is_https, get_current_user
+from ..rate_limit import limiter
 from ..models import (
     EmailLoginRequest,
     LoginRequest,
@@ -153,8 +154,9 @@ async def auth_status(request: starlette.requests.Request):
 
 
 @router.post("/signup", status_code=status.HTTP_201_CREATED)
+@limiter.limit("5/hour")
 async def auth_signup(
-    body: SignupRequest, request: Request, response: Response
+    request: Request, body: SignupRequest, response: Response
 ):
     existing = db_auth.get_user_by_email(body.email)
     if existing is not None:
@@ -194,6 +196,7 @@ async def auth_signup(
 
 
 @router.post("/login")
+@limiter.limit("10/minute")
 async def auth_login(request: Request, response: Response):
     """Login handler.
 
@@ -350,7 +353,9 @@ async def auth_mfa_setup(user: dict[str, Any] = Depends(get_current_user)):
 
 
 @router.post("/mfa/enable")
+@limiter.limit("5/minute")
 async def auth_mfa_enable(
+    request: Request,
     body: MfaEnableRequest,
     user: dict[str, Any] = Depends(get_current_user),
 ):
@@ -368,7 +373,9 @@ async def auth_mfa_enable(
 
 
 @router.post("/mfa/disable")
+@limiter.limit("5/minute")
 async def auth_mfa_disable(
+    request: Request,
     body: MfaDisableRequest,
     user: dict[str, Any] = Depends(get_current_user),
 ):
@@ -420,6 +427,7 @@ async def verify_email_get(token: str):
 
 
 @router.post("/resend-verification", response_model=ResendVerificationResponse)
+@limiter.limit("3/hour")
 async def resend_verification(
     request: Request,
     user: dict[str, Any] = Depends(get_current_user),
@@ -509,7 +517,8 @@ async def oauth_providers_status():
 
 
 @router.get("/oauth/{provider}/start")
-async def oauth_start(provider: str, request: Request):
+@limiter.limit("10/minute")
+async def oauth_start(request: Request, provider: str):
     """Redirect the user-agent to the IdP's consent screen.
 
     503 if the provider is recognised but not configured (env vars unset)
