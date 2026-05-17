@@ -516,6 +516,20 @@ def signup(
     user = create_user(tenant["id"], normalized_email, password)
     workspace = create_workspace(tenant["id"], "Default", user["id"])
     add_workspace_member(workspace["id"], user["id"], "owner")
+    # Bootstrap a 14-day Pro trial so new users can evaluate paid features
+    # without going through checkout. Wrapped in try/except so any billing
+    # module hiccup (missing seed, transient DB error) cannot break the
+    # signup itself — the user can still upgrade later from /pricing.
+    try:
+        from . import db_billing
+
+        db_billing.apply_signup_trial(tenant["id"])
+    except Exception:  # noqa: BLE001 — log path is fine; signup must succeed
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "apply_signup_trial failed for tenant=%s", tenant["id"]
+        )
     return tenant, user, workspace
 
 
@@ -700,4 +714,15 @@ def signup_oauth(
     assert user is not None  # just inserted
     workspace = create_workspace(tenant["id"], "Default", user["id"])
     add_workspace_member(workspace["id"], user["id"], "owner")
+    # Same 14-day Pro trial bootstrap as the password ``signup`` path.
+    try:
+        from . import db_billing
+
+        db_billing.apply_signup_trial(tenant["id"])
+    except Exception:  # noqa: BLE001
+        import logging
+
+        logging.getLogger(__name__).exception(
+            "apply_signup_trial failed for tenant=%s", tenant["id"]
+        )
     return tenant, user, workspace

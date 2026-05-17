@@ -23,6 +23,17 @@ export function SignupPage({ onSuccess, onSwitchToLogin }: SignupPageProps) {
   const [loading, setLoading] = useState(false);
   // OAuth providers discovery — see LoginPage for the equivalent comment.
   const [providers, setProviders] = useState<OAuthProvidersStatus | null>(null);
+  // Optional ``?plan=pro`` in the URL means the user came from the pricing
+  // page — show a banner clarifying which trial they're about to start.
+  // The trial is *always* Pro server-side (apply_signup_trial); we use the
+  // URL param only to label the banner correctly when it ever isn't.
+  const trialPlan = (() => {
+    try {
+      return new URLSearchParams(window.location.search).get("plan");
+    } catch {
+      return null;
+    }
+  })();
 
   useEffect(() => {
     oauth
@@ -83,6 +94,12 @@ export function SignupPage({ onSuccess, onSwitchToLogin }: SignupPageProps) {
             Sign up to manage browser profiles
           </p>
         </div>
+        {trialPlan && (
+          <div className="mb-4 px-3 py-2 rounded border border-accent/40 bg-accent/10 text-xs text-gray-200">
+            Starting 14-day trial on{" "}
+            <span className="font-semibold capitalize">{trialPlan}</span> plan
+          </div>
+        )}
         {providers && (providers.google || providers.github) && (
           <div className="mb-4 space-y-2">
             {providers.google && (

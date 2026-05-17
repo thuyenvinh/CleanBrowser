@@ -10,6 +10,7 @@ import { LaunchButton } from "./components/LaunchButton";
 import { StatusIndicator } from "./components/StatusIndicator";
 import { LoginPage } from "./components/LoginPage";
 import { SignupPage } from "./components/SignupPage";
+import { PricingPage } from "./components/PricingPage";
 import { WorkspaceSelector } from "./components/WorkspaceSelector";
 import { ProxyPage } from "./components/ProxyPage";
 import { AutomationPage } from "./components/AutomationPage";
@@ -19,13 +20,23 @@ import { EmailVerificationBanner } from "./components/EmailVerificationBanner";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
-type AuthView = "login" | "signup";
+type AuthView = "login" | "signup" | "pricing";
 type Tab = "profiles" | "proxies" | "automations" | "marketplace" | "billing";
 
 export default function App() {
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [authRequired, setAuthRequired] = useState(false);
-  const [authView, setAuthView] = useState<AuthView>("login");
+  // Initial auth view: if the URL carries ``?pricing=1`` show the marketing
+  // pricing page first; otherwise default to the login form.
+  const [authView, setAuthView] = useState<AuthView>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("pricing")
+        ? "pricing"
+        : "login";
+    } catch {
+      return "login";
+    }
+  });
   const authCtx = useAuth();
 
   useEffect(() => {
@@ -86,6 +97,25 @@ export default function App() {
   }
 
   if (authState === "required") {
+    if (authView === "pricing") {
+      return (
+        <PricingPage
+          onStartTrial={(planId) => {
+            // Update URL so SignupPage can read ``?plan=`` for the banner.
+            try {
+              const url = new URL(window.location.href);
+              url.searchParams.set("plan", planId);
+              url.searchParams.delete("pricing");
+              window.history.replaceState({}, "", url.toString());
+            } catch {
+              /* no-op in non-browser test envs */
+            }
+            setAuthView("signup");
+          }}
+          onLogin={() => setAuthView("login")}
+        />
+      );
+    }
     if (authView === "signup") {
       return (
         <SignupPage

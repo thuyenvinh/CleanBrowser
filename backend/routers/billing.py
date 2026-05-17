@@ -21,6 +21,24 @@ async def list_plans(_: dict = Depends(get_current_user)):
     return db_billing.list_plans(public_only=True)
 
 
+@router.get("/plans/public")
+async def list_public_plans():
+    """Public pricing catalogue — no auth required.
+
+    Backs the marketing ``/pricing`` page rendered before the user has a
+    session. Wrapped in ``system_context`` because the RLS policies on
+    related tables are restrictive: with no tenant pinned in the GUC a
+    plain query would be denied. ``plans`` itself has no RLS today but
+    we use the same scaffold so a future "plans visible to tenant" RLS
+    policy doesn't silently break the marketing page.
+    """
+    from .. import db_billing
+    from ..middleware_rls import system_context
+
+    with system_context():
+        return db_billing.list_plans(public_only=True)
+
+
 @router.get("/subscription")
 async def get_subscription(user: dict = Depends(get_current_user)):
     """Return active subscription + plan + current usage."""

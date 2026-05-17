@@ -656,11 +656,49 @@ def list_invoices(tenant_id: str, limit: int = 100) -> list[dict[str, Any]]:
             return [_row_to_dict(r) for r in cur.fetchall() or []]
 
 
+# ---------------------------------------------------------------------------
+# Signup trial bootstrap
+# ---------------------------------------------------------------------------
+
+
+def apply_signup_trial(
+    tenant_id: str,
+    trial_plan_id: str = "pro",
+    days: int = 14,
+) -> dict[str, Any] | None:
+    """Create a trialing subscription on the chosen plan for a fresh tenant.
+
+    Idempotent — if the tenant already has *any* active-ish subscription
+    (e.g. a webhook beat us to it, or someone called signup twice) we
+    return that existing row instead of stacking a duplicate trial, which
+    would violate ``ux_subscriptions_active``. Returns ``None`` only when
+    the requested ``trial_plan_id`` doesn't exist in the seed catalogue.
+    """
+    existing = get_active_subscription(tenant_id)
+    if existing:
+        return existing
+    plan = get_plan(trial_plan_id)
+    if not plan:
+        return None
+    now = datetime.datetime.now(datetime.timezone.utc)
+    trial_end = now + datetime.timedelta(days=days)
+    return create_subscription(
+        tenant_id=tenant_id,
+        plan_id=trial_plan_id,
+        status="trialing",
+        payment_provider=None,
+        trial_end=trial_end,
+        current_period_start=now,
+        current_period_end=trial_end,
+    )
+
+
 __all__ = [
     "ACTIVE_SUBSCRIPTION_STATUSES",
     "VALID_INVOICE_STATUSES",
     "VALID_PAYMENT_PROVIDERS",
     "VALID_SUBSCRIPTION_STATUSES",
+    "apply_signup_trial",
     "cancel_subscription",
     "create_invoice",
     "create_subscription",

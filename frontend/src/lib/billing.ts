@@ -82,4 +82,13 @@ export const billing = {
     }),
   openPortal: () => request<{url: string}>("/api/billing/portal", { method: "POST" }),
   listInvoices: () => request<Invoice[]>("/api/billing/invoices"),
+  // No workspace header — the public endpoint is auth-less and used by the
+  // marketing /pricing page before the user has a session.
+  listPublicPlans: () => {
+    return fetch("/api/billing/plans/public", { credentials: "same-origin" })
+      .then((r) => {
+        if (!r.ok) throw new Error(`${r.status}`);
+        return r.json() as Promise<Plan[]>;
+      });
+  },
 };
