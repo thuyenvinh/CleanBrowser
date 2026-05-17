@@ -139,6 +139,8 @@ class AuthMiddleware:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from . import telemetry as _telemetry
+    _telemetry.setup_tracing(app)
     db.init_db()
     await browser_mgr.cleanup_stale()
     browser_mgr._auto_launch_task = asyncio.create_task(browser_mgr.auto_launch_all())
