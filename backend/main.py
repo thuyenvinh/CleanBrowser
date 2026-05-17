@@ -27,6 +27,7 @@ from . import automation_scheduler
 from . import database as db
 from . import overage_worker
 from . import proxy_health
+from . import status_worker
 from . import idle_reaper
 from .dependencies import (
     FRONTEND_DIR,
@@ -49,6 +50,7 @@ from .routers import proxies as proxies_router
 from .routers import regions as regions_router
 from .routers import system as system_router
 from .routers import vnc as vnc_router
+from .routers import webhooks as webhooks_router
 from .routers import workspaces as workspaces_router
 
 # Re-export RFB helpers so existing tests that do
@@ -147,6 +149,7 @@ async def lifespan(app: FastAPI):
     await browser_mgr.cleanup_stale()
     browser_mgr._auto_launch_task = asyncio.create_task(browser_mgr.auto_launch_all())
     await proxy_health.start()
+    await status_worker.start()
     await automation_scheduler.start()
     await idle_reaper.start()
     await overage_worker.start()
@@ -159,6 +162,7 @@ async def lifespan(app: FastAPI):
     await overage_worker.stop()
     await idle_reaper.stop()
     await automation_scheduler.stop()
+    await status_worker.stop()
     await proxy_health.stop()
     await browser_mgr.cleanup_all()
 
@@ -188,6 +192,7 @@ app.include_router(system_router.router)
 app.include_router(billing_router.router)
 app.include_router(ai_router.router)
 app.include_router(marketplace_router.router)
+app.include_router(webhooks_router.router)
 
 
 # ── Static Frontend ───────────────────────────────────────────────────────────
