@@ -152,3 +152,42 @@ def list_for_user(
                 (user_id, limit, offset),
             )
             return [_row_to_dict(r) for r in cur.fetchall()]  # type: ignore[misc]
+
+
+def migrate_to_clickhouse(batch_size: int = 1000) -> int:
+    """One-shot tool: copy existing Postgres audit_logs → ClickHouse.
+    Returns rows migrated. Idempotent only if ClickHouse table is empty."""
+    from . import audit_clickhouse
+    if not audit_clickhouse.is_configured():
+        raise RuntimeError("CLICKHOUSE_URL not configured")
+    audit_clickhouse.ensure_schema()
+    total = 0
+    offset = 0
+    while True:
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    "SELECT * FROM audit_logs ORDER BY ts LIMIT %s OFFSET %s",
+                    (batch_size, offset),
+                )
+                rows = cur.fetchall()
+        if not rows:
+            break
+        for r in rows:
+            audit_clickhouse.write(
+                id=str(r["id"]),
+                action=r["action"],
+                tenant_id=str(r["tenant_id"]) if r.get("tenant_id") else None,
+                actor_user_id=str(r["actor_user_id"]) if r.get("actor_user_id") else None,
+                resource_type=r.get("resource_type"),
+                resource_id=r.get("resource_id"),
+                ip=r.get("ip"),
+                user_agent=r.get("user_agent"),
+                status=r.get("status", "success"),
+                payload=r.get("payload"),
+                ts=r.get("ts"),
+            )
+        total += len(rows)
+        offset += batch_size
+        print(f"migrated {total} rows...")
+    return total

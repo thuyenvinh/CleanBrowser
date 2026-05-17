@@ -27,14 +27,18 @@ Explicitly skipped:
 
 from __future__ import annotations
 
+import logging
 import re
+import uuid
 from typing import Any
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.requests import Request
 from starlette.responses import Response
 
-from . import db_audit
+from . import audit_clickhouse, db_audit
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -209,6 +213,12 @@ class AuditMiddleware(BaseHTTPMiddleware):
 
         tenant_id, actor_user_id = _actor_info(request)
 
+        payload = {
+            "method": method,
+            "path": path,
+            "status_code": response.status_code,
+        }
+
         # Fire-and-forget — ``db_audit.write`` is documented as never raising.
         db_audit.write(
             action=action,
@@ -217,11 +227,25 @@ class AuditMiddleware(BaseHTTPMiddleware):
             ip=ip,
             user_agent=user_agent,
             status="success",
-            payload={
-                "method": method,
-                "path": path,
-                "status_code": response.status_code,
-            },
+            payload=payload,
         )
+
+        # Dual-write to ClickHouse for analytics + long retention. Silent
+        # no-op when CLICKHOUSE_URL is not configured. Errors must never
+        # break the request flow.
+        try:
+            if audit_clickhouse.is_configured():
+                audit_clickhouse.write(
+                    id=str(uuid.uuid4()),
+                    action=action,
+                    tenant_id=tenant_id,
+                    actor_user_id=actor_user_id,
+                    ip=ip,
+                    user_agent=user_agent,
+                    status="success",
+                    payload=payload,
+                )
+        except Exception:
+            logger.exception("clickhouse dual-write failed")
 
         return response

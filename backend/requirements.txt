@@ -26,3 +26,4 @@ slowapi>=0.1.9
 # Optional - required only when running RemoteWorker / worker_server gRPC.
 grpcio>=1.60
 grpcio-tools>=1.60
+clickhouse-driver>=0.2.7
