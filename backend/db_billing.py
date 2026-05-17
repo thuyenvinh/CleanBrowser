@@ -774,6 +774,58 @@ def list_overage_events_for_period(
     return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
 
 
+# ---------------------------------------------------------------------------
+# Subscription overage line-item (Phase 7 phase 2 — Stripe usage records)
+# ---------------------------------------------------------------------------
+
+
+def set_subscription_overage_item(
+    subscription_id: str, overage_subscription_item_id: str | None
+) -> None:
+    """Pin the Stripe ``subscription_item`` id used for metered overage.
+
+    Stripe ``Usage Records`` are posted against a line-item id, not a
+    subscription id — when our webhook handler resolves a new
+    subscription with a metered overage price, it stashes that line
+    item id here so the periodic flusher can POST against it without
+    re-querying Stripe.
+
+    Passing ``None`` clears the pin (e.g. when downgrading to a plan
+    without overage). The column is nullable by design.
+    """
+    if not _is_uuid(subscription_id):
+        return
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE subscriptions "
+                "SET overage_subscription_item_id = %s, updated_at = now() "
+                "WHERE id = %s",
+                (overage_subscription_item_id, subscription_id),
+            )
+        conn.commit()
+
+
+def get_subscription_overage_item(subscription_id: str) -> str | None:
+    """Return the pinned Stripe subscription-item id, or ``None`` if unset.
+
+    ``None`` means "no metered relay target" — the flusher worker treats
+    that as a soft skip (the overage stays in the local ledger and a
+    later reconciler can pick it up once the item id lands).
+    """
+    if not _is_uuid(subscription_id):
+        return None
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT overage_subscription_item_id FROM subscriptions "
+                "WHERE id = %s",
+                (subscription_id,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+
 __all__ = [
     "ACTIVE_SUBSCRIPTION_STATUSES",
     "VALID_INVOICE_STATUSES",
@@ -787,6 +839,7 @@ __all__ = [
     "get_or_create_current_period",
     "get_plan",
     "get_subscription_by_provider_id",
+    "get_subscription_overage_item",
     "get_tenant_limits",
     "get_tenant_usage",
     "increment_counter",
@@ -795,6 +848,7 @@ __all__ = [
     "list_plans",
     "record_overage_event",
     "set_counter",
+    "set_subscription_overage_item",
     "update_peak",
     "update_subscription",
 ]

@@ -4,8 +4,8 @@ When a tenant exceeds the per-period soft cap on a metered resource
 (``automation_minutes_used`` today), instead of 402-blocking we record
 an overage event + relay it to Stripe as a usage record if the plan has
 metered billing configured. Unreported events accumulate locally so
-that a missing/down Stripe doesn't lose revenue — a daily reconcile
-job (Phase 7 phase 2) can replay them.
+that a missing/down Stripe doesn't lose revenue — the periodic flusher
+(:mod:`backend.overage_worker`) drains the queue every minute.
 
 Public surface:
 
@@ -13,17 +13,20 @@ Public surface:
   :func:`backend.quota.record_usage` after an over-cap increment).
 * :func:`is_stripe_metered_available` — true iff ``STRIPE_SECRET_KEY``
   is configured. Exposed so callers / tests can branch.
-* :func:`report_to_stripe` — best-effort wrapper around
-  ``stripe.SubscriptionItem.create_usage_record``. Phase 7 phase 1
-  doesn't yet wire this up from :func:`emit_overage` (we don't store
-  the subscription-item id locally); it's kept here so the phase 2
-  reconciler can use it without re-implementing the call.
+* :func:`report_to_stripe` — best-effort POST to Stripe's
+  ``SubscriptionItem.create_usage_record``. Returns the Stripe record
+  id on success or ``None`` on any failure; the event stays
+  ``reported = false`` and the next tick retries.
+* :func:`list_unreported_events` / :func:`mark_reported` — the
+  queue/ack pair the flusher uses.
 """
 from __future__ import annotations
 
 import logging
 import os
 from typing import Any
+
+import psycopg2.extras
 
 logger = logging.getLogger(__name__)
 
@@ -33,36 +36,6 @@ def is_stripe_metered_available() -> bool:
     return bool(os.environ.get("STRIPE_SECRET_KEY"))
 
 
-def report_to_stripe(subscription_item_id: str, units: int) -> str | None:
-    """Report metered usage to Stripe.
-
-    Returns the resulting Stripe ``usage_record`` id, or ``None`` on any
-    failure (missing key, network error, API rejection). Failures are
-    logged but never raised — the local overage event has already
-    persisted, so a Stripe outage just means the reconcile job will
-    pick the event up later.
-    """
-    if not is_stripe_metered_available():
-        return None
-    try:
-        import stripe  # type: ignore[import-not-found]
-
-        stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
-        rec = stripe.SubscriptionItem.create_usage_record(
-            subscription_item_id,
-            quantity=units,
-            timestamp="now",
-            action="increment",
-        )
-        return rec.id
-    except Exception:
-        logger.exception(
-            "overage: stripe usage record failed sub_item=%s",
-            subscription_item_id,
-        )
-        return None
-
-
 def emit_overage(
     tenant_id: str,
     resource: str,
@@ -70,16 +43,16 @@ def emit_overage(
     plan: dict[str, Any] | None = None,
     subscription: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
-    """Record one local overage event + best-effort Stripe usage report.
+    """Record one local overage event.
 
     Returns the persisted event dict, or ``None`` if the plan disallows
     overage / ``units`` is non-positive / the plan is missing.
 
-    Phase 7 phase 1 deliberately skips the Stripe relay: we don't yet
-    persist the metered subscription-item id alongside the
-    subscription row, so we have nothing to call
-    :func:`report_to_stripe` with. The local ledger is the source of
-    truth — phase 2 will add the item-id and the daily reconcile.
+    Stripe relay is intentionally *not* done synchronously here — the
+    request path stays on the fast path and the periodic
+    :mod:`backend.overage_worker` flusher picks the event up within
+    ``OVERAGE_FLUSH_INTERVAL_SECONDS``. That keeps Stripe latency /
+    outages out of the user-visible action.
     """
     if not plan or not plan.get("allow_overage"):
         return None
@@ -94,9 +67,6 @@ def emit_overage(
         else None
     )
 
-    # Phase 7 phase 1: skip Stripe relay; persist locally only.
-    stripe_id: str | None = None
-
     from .. import db_billing  # local import to avoid circular at module load
 
     return db_billing.record_overage_event(
@@ -105,12 +75,150 @@ def emit_overage(
         resource=resource,
         units=units,
         unit_price_cents=unit_price,
-        stripe_usage_record_id=stripe_id,
+        stripe_usage_record_id=None,
     )
+
+
+# ---------------------------------------------------------------------------
+# Flusher queue helpers (consumed by :mod:`backend.overage_worker`)
+# ---------------------------------------------------------------------------
+
+
+def list_unreported_events(limit: int = 500) -> list[dict[str, Any]]:
+    """Return up to ``limit`` overage events still pending relay to Stripe.
+
+    Ordered by ``occurred_at`` ascending so the flusher drains the
+    queue oldest-first — that keeps Stripe usage timestamps in the same
+    order events actually happened, which is what their reporting UI
+    expects. The partial index
+    ``ix_overage_events_unreported (reported, occurred_at) WHERE reported = false``
+    backs this scan.
+    """
+    from ..database import get_db
+
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM overage_events
+                   WHERE reported = false
+                   ORDER BY occurred_at
+                   LIMIT %s""",
+                (limit,),
+            )
+            return [dict(r) for r in cur.fetchall() or []]
+
+
+def mark_reported(
+    event_id: str, stripe_usage_record_id: str | None = None
+) -> None:
+    """Flip an overage event to ``reported = true`` and stamp the time.
+
+    Optional ``stripe_usage_record_id`` is recorded for traceability —
+    operators can grep the events table to find the corresponding
+    Stripe object. We don't enforce non-null here because the same
+    helper is reused by hypothetical out-of-band reconcilers that don't
+    have a record id (e.g. when Stripe accepted the call but we lost
+    the response).
+    """
+    from ..database import get_db
+
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE overage_events
+                   SET reported = true,
+                       reported_at = now(),
+                       stripe_usage_record_id = COALESCE(%s, stripe_usage_record_id)
+                   WHERE id = %s""",
+                (stripe_usage_record_id, event_id),
+            )
+        conn.commit()
+
+
+def report_to_stripe(event: dict[str, Any]) -> str | None:
+    """POST one overage event to Stripe as a metered Usage Record.
+
+    Returns the Stripe ``usage_record`` id on success, or ``None`` on
+    any failure (Stripe not configured, missing line-item id, missing
+    subscription id, network error, API rejection). Failures are
+    logged but never raised — the event stays ``reported = false`` and
+    the next flush tick retries it.
+
+    Idempotency: passes ``event['id']`` as the ``idempotency_key``. If a
+    previous attempt actually succeeded but we crashed before
+    persisting the response, Stripe will return the same record on
+    retry instead of double-billing.
+    """
+    from . import stripe_adapter
+
+    if not stripe_adapter.is_configured():
+        return None
+
+    sub_id = event.get("subscription_id")
+    if not sub_id:
+        # Pre-subscription overage (shouldn't happen but defensive — an
+        # event with no subscription can't be priced against any Stripe
+        # item, so let it stay in the local ledger for manual review).
+        logger.warning(
+            "overage event %s has no subscription_id; skipping Stripe relay",
+            event.get("id"),
+        )
+        return None
+
+    from .. import db_billing
+
+    item_id = db_billing.get_subscription_overage_item(sub_id)
+    if not item_id:
+        # Subscription exists but the webhook handler hasn't pinned the
+        # line-item id yet (or the plan has no metered price). Skip
+        # rather than error — once the item id is set we'll catch up.
+        logger.warning(
+            "subscription %s has no overage_subscription_item_id; "
+            "skipping Stripe relay for event %s",
+            sub_id,
+            event.get("id"),
+        )
+        return None
+
+    try:
+        import stripe  # type: ignore[import-not-found]
+
+        stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+
+        # ``occurred_at`` is a TIMESTAMPTZ from Postgres; psycopg2 returns
+        # it as a tz-aware datetime. Stripe wants a unix int. Fall back
+        # to "now" if anything looks off rather than failing the post.
+        occurred_at = event.get("occurred_at")
+        timestamp_arg: int | str
+        if hasattr(occurred_at, "timestamp"):
+            try:
+                timestamp_arg = int(occurred_at.timestamp())
+            except (TypeError, ValueError):
+                timestamp_arg = "now"
+        else:
+            timestamp_arg = "now"
+
+        rec = stripe.SubscriptionItem.create_usage_record(
+            item_id,
+            quantity=int(event["units"]),
+            timestamp=timestamp_arg,
+            action="increment",
+            idempotency_key=str(event["id"]),
+        )
+        return rec.id
+    except Exception:
+        logger.exception(
+            "overage: stripe usage record failed event=%s sub_item=%s",
+            event.get("id"),
+            item_id,
+        )
+        return None
 
 
 __all__ = [
     "emit_overage",
     "is_stripe_metered_available",
+    "list_unreported_events",
+    "mark_reported",
     "report_to_stripe",
 ]
