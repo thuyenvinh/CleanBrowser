@@ -81,6 +81,13 @@ class QuotaCheckResult:
     limit: int | None
     current: int
     reason: str = ""
+    # Phase 7 phase 1: ``True`` when ``allowed`` is granted *because*
+    # the tenant's plan tolerates overage, not because they're under
+    # the cap. Callers can surface this to the UI (e.g. an "extra
+    # charges apply" badge) and to logging without re-querying the
+    # plan row. Plain bool default keeps existing call sites
+    # backwards-compatible.
+    is_overage: bool = False
 
     def raise_if_exceeded(self) -> None:
         """Raise HTTP 402 Payment Required if this result is a denial.
@@ -153,6 +160,23 @@ def check_quota(
     current = usage.get(usage_field, 0) or 0
 
     if current + requested_delta > limit:
+        # Phase 7 phase 1: ``run_automation`` is the first metered
+        # resource that supports overage. If the tenant's plan has
+        # ``allow_overage = true`` we let the action through and let
+        # :func:`record_usage` emit an overage event after the fact.
+        # Every other action still hard-caps with 402 — opening more
+        # resources to overage is a phase-2 task.
+        if action == "run_automation" and limits.get("allow_overage"):
+            return QuotaCheckResult(
+                allowed=True,
+                limit=limit,
+                current=current,
+                is_overage=True,
+                reason=(
+                    f"Overage billing engaged for {friendly}: "
+                    f"{current}/{limit}"
+                ),
+            )
         return QuotaCheckResult(
             allowed=False,
             limit=limit,
@@ -208,6 +232,36 @@ def record_usage(
             )
         elif action == "run_automation":
             db_billing.increment_counter(tenant_id, usage_field, delta)
+            # Phase 7 phase 1: if the bump pushed us over the cap and
+            # the plan allows overage, emit a billable event. We pass
+            # ``delta`` (not the cumulative over-cap total) so each
+            # ``record_usage`` call charges only the minutes it just
+            # added — the daily reconciler (phase 2) is in charge of
+            # de-duplicating against Stripe. Wrapped in its own try so
+            # an overage helper failure can't break the increment we
+            # already committed above.
+            try:
+                limits = db_billing.get_tenant_limits(tenant_id)
+                limit = limits.get("max_automation_minutes")
+                if limit is not None and limits.get("allow_overage"):
+                    usage = db_billing.get_tenant_usage(tenant_id)
+                    used = usage.get(usage_field, 0) or 0
+                    if used > limit:
+                        from backend.billing import overage
+
+                        sub = db_billing.get_active_subscription(tenant_id)
+                        overage.emit_overage(
+                            tenant_id,
+                            "automation_minutes",
+                            delta,
+                            plan=limits,
+                            subscription=sub,
+                        )
+            except Exception:
+                logger.exception(
+                    "record_usage: overage emission failed tenant=%s",
+                    tenant_id,
+                )
     except Exception:
         # Never propagate — the caller already committed the user action.
         logger.exception(

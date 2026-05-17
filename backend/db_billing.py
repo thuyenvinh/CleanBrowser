@@ -536,6 +536,11 @@ def get_tenant_limits(tenant_id: str) -> dict[str, Any]:
             f"plan {plan_id!r} not found and no fallback available — "
             "seed in migration 0015_add_billing may have been removed"
         )
+    # Surface the resolved plan slug so quota / overage helpers can
+    # re-read the full plan row (or pass it to ``emit_overage``) without
+    # repeating the subscription lookup. Underscore-prefixed because it
+    # piggybacks on the plan dict rather than being a plan column.
+    plan["_plan_id"] = plan_id
     return plan
 
 
@@ -693,6 +698,82 @@ def apply_signup_trial(
     )
 
 
+# ---------------------------------------------------------------------------
+# Overage events (Phase 7 phase 1 — metered billing)
+# ---------------------------------------------------------------------------
+
+
+def record_overage_event(
+    *,
+    tenant_id: str,
+    subscription_id: str | None,
+    resource: str,
+    units: int,
+    unit_price_cents: int | None = None,
+    stripe_usage_record_id: str | None = None,
+) -> dict[str, Any]:
+    """Persist one overage event under the current calendar-month period.
+
+    Mirrors the soft-cap accounting model used by Vercel / Heroku /
+    Render: when a tenant goes over a metered limit we let the action
+    succeed and stash the billable delta here. ``unit_price_cents`` is
+    a snapshot of the plan price at event time so re-pricing the plan
+    later cannot retroactively change historical bills.
+
+    ``stripe_usage_record_id`` is left ``NULL`` when Stripe hasn't yet
+    been told about this event — the partial
+    ``ix_overage_events_unreported`` index is what the phase-2 daily
+    reconciler will scan to drain the queue.
+    """
+    event_id = str(uuid.uuid4())
+    period_start, period_end = _current_period_bounds()
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO overage_events
+                       (id, tenant_id, subscription_id, resource, units,
+                        unit_price_cents, stripe_usage_record_id,
+                        period_start, period_end)
+                   VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                   RETURNING *""",
+                (
+                    event_id,
+                    tenant_id,
+                    subscription_id,
+                    resource,
+                    units,
+                    unit_price_cents,
+                    stripe_usage_record_id,
+                    period_start,
+                    period_end,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row)  # type: ignore[return-value]
+
+
+def list_overage_events_for_period(
+    tenant_id: str, period_start: datetime.date
+) -> list[dict[str, Any]]:
+    """All overage events for ``tenant_id`` in the given calendar month.
+
+    Ordered by ``occurred_at`` (oldest first) — handy for both the
+    audit UI and the phase-2 reconciler, which needs deterministic
+    replay order.
+    """
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM overage_events
+                   WHERE tenant_id = %s AND period_start = %s
+                   ORDER BY occurred_at""",
+                (tenant_id, period_start),
+            )
+            rows = cur.fetchall() or []
+    return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
+
+
 __all__ = [
     "ACTIVE_SUBSCRIPTION_STATUSES",
     "VALID_INVOICE_STATUSES",
@@ -710,7 +791,9 @@ __all__ = [
     "get_tenant_usage",
     "increment_counter",
     "list_invoices",
+    "list_overage_events_for_period",
     "list_plans",
+    "record_overage_event",
     "set_counter",
     "update_peak",
     "update_subscription",

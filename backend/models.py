@@ -825,3 +825,35 @@ class MarketplaceAppSubmit(BaseModel):
     icon_url: str | None = None
     creator_name: str | None = None
     creator_url: str | None = None
+
+
+# ---------------------------------------------------------------------------
+# Phase 7 phase 1 — overage billing.
+#
+# One row per "we let the tenant exceed the per-period cap" decision,
+# persisted by :func:`backend.db_billing.record_overage_event`. The
+# local ledger is the source of truth: even if Stripe is unreachable
+# at event time, the row lands here and the phase-2 daily reconciler
+# replays unreported events (``stripe_usage_record_id IS NULL``).
+# ---------------------------------------------------------------------------
+
+
+class OverageEvent(BaseModel):
+    """One ``overage_events`` row.
+
+    ``unit_price_cents`` is a snapshot of the plan price at event time
+    so re-pricing the plan later cannot retroactively change historical
+    bills. ``stripe_usage_record_id`` is ``None`` until the reconciler
+    successfully relays the event to Stripe's metered API.
+    """
+
+    id: str
+    tenant_id: str
+    subscription_id: str | None = None
+    resource: str
+    units: int
+    unit_price_cents: int | None = None
+    stripe_usage_record_id: str | None = None
+    occurred_at: datetime
+    period_start: date
+    period_end: date
