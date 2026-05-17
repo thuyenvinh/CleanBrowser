@@ -225,10 +225,36 @@ async def _execute_run_async(
         db.mark_run_running(run_id)
 
         if version.get("kind") == "script":
+            from ..automation import (  # noqa: WPS433
+                execute_script,
+                script_runtime_available,
+            )
+
+            if not script_runtime_available():
+                db.end_run(
+                    run_id,
+                    "failure",
+                    error_message="Node runtime not available",
+                )
+                return
+
+            cdp_url = None
+            if profile_id:
+                running = browser_mgr.running.get(profile_id)
+                if running:
+                    cdp_url = f"http://localhost:{running.cdp_port}"
+
+            result = await execute_script(
+                code=version.get("script_code") or "",
+                language=version.get("script_language") or "typescript",
+                cdp_url=cdp_url,
+            )
             db.end_run(
                 run_id,
-                "failure",
-                error_message="script mode not implemented yet",
+                result["status"],
+                result_json=result.get("vars") or {},
+                log_text=result.get("log") or "",
+                error_message=result.get("error"),
             )
             return
 

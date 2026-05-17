@@ -11,5 +11,11 @@ to be invoked from a router or background worker.
 
 from .context import RunContext
 from .interpreter import FlowInterpreter
+from .script_runtime import execute_script, is_available as script_runtime_available
 
-__all__ = ["FlowInterpreter", "RunContext"]
+__all__ = [
+    "FlowInterpreter",
+    "RunContext",
+    "execute_script",
+    "script_runtime_available",
+]
