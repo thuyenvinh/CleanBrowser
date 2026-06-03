@@ -3,6 +3,7 @@ import { useProxies } from "../hooks/useProxies";
 import { ProxyList } from "./ProxyList";
 import { ProxyForm } from "./ProxyForm";
 import { ProxyImportDialog } from "./ProxyImportDialog";
+import { proxy as proxyApi } from "../lib/proxy";
 import type { Proxy, ProxyCreateInput, ProxyUpdateInput } from "../lib/proxy";
 
 interface ProxyPageProps {
@@ -52,12 +53,49 @@ export function ProxyPage({ currentWorkspaceId }: ProxyPageProps) {
     [mode, selectedId, create, update],
   );
 
+  // Shared delete-with-impact-check. Fetches usage first so the confirm
+  // dialog can warn the user when N profiles will lose their proxy (M8).
+  // ``fallbackName`` is shown in the dialog for the list-view delete button
+  // where we don't necessarily have a `selected` Proxy object handy.
+  const confirmAndDelete = useCallback(
+    async (id: string, fallbackName?: string) => {
+      let warning = `Delete proxy${fallbackName ? ` "${fallbackName}"` : ""}?`;
+      try {
+        const { profiles } = await proxyApi.getUsage(id);
+        if (profiles.length > 0) {
+          const names = profiles
+            .slice(0, 10)
+            .map((p) => `  - ${p.name}`)
+            .join("\n");
+          const more =
+            profiles.length > 10
+              ? `\n  ... and ${profiles.length - 10} more`
+              : "";
+          warning =
+            `Delete proxy${fallbackName ? ` "${fallbackName}"` : ""}?\n\n` +
+            `${profiles.length} profile${profiles.length === 1 ? "" : "s"} ` +
+            `currently use this proxy:\n${names}${more}\n\n` +
+            `These profiles will lose their proxy and may leak server IP.`;
+        }
+      } catch {
+        // Non-fatal: if usage lookup fails we still let the user confirm.
+      }
+      if (!confirm(warning)) return false;
+      await remove(id);
+      return true;
+    },
+    [remove],
+  );
+
   const handleDelete = useCallback(async () => {
     if (!selectedId) return;
-    await remove(selectedId);
-    setSelectedId(null);
-    setMode("empty");
-  }, [selectedId, remove]);
+    const name = proxies.find((p) => p.id === selectedId)?.name;
+    const ok = await confirmAndDelete(selectedId, name);
+    if (ok) {
+      setSelectedId(null);
+      setMode("empty");
+    }
+  }, [selectedId, proxies, confirmAndDelete]);
 
   const handleTest = useCallback(
     async (id: string) => {
@@ -95,7 +133,15 @@ export function ProxyPage({ currentWorkspaceId }: ProxyPageProps) {
           onNew={handleNew}
           onImport={() => setImportOpen(true)}
           onTest={handleTest}
-          onDelete={(id) => remove(id)}
+          onDelete={(id) => {
+            const name = proxies.find((p) => p.id === id)?.name;
+            void confirmAndDelete(id, name).then((ok) => {
+              if (ok && id === selectedId) {
+                setSelectedId(null);
+                setMode("empty");
+              }
+            });
+          }}
         />
         {importOpen && (
           <ProxyImportDialog

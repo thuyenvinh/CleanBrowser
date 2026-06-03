@@ -113,4 +113,8 @@ export const proxy = {
     request<void>(`/api/proxies/${id}`, { method: "DELETE" }),
   test: (id: string) =>
     request<ProxyTestResult>(`/api/proxies/${id}/test`, { method: "POST" }),
+  getUsage: (id: string) =>
+    request<{ profiles: { id: string; name: string }[] }>(
+      `/api/proxies/${id}/usage`,
+    ),
 };

@@ -214,6 +214,31 @@ async def delete_proxy(
     return Response(status_code=204)
 
 
+@router.get("/{proxy_id}/usage")
+def get_proxy_usage(
+    proxy_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    """List profiles currently using this proxy. For delete-confirm dialog.
+
+    Inlined here (instead of growing :mod:`backend.db_proxy`) so this UX wave
+    doesn't churn the data layer — see RULES in the task brief. Viewer role
+    is sufficient: callers need to *see* impact before deciding to delete.
+    """
+    _load_and_check_proxy(proxy_id, user, ROLE_LEVEL["viewer"])
+    import psycopg2.extras
+
+    from ..database import get_db
+
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                "SELECT id, name FROM profiles WHERE proxy_id = %s",
+                (proxy_id,),
+            )
+            return {"profiles": [dict(r) for r in cur.fetchall()]}
+
+
 # ── Manual health-check ──────────────────────────────────────────────────────
 
 

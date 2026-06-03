@@ -5,6 +5,8 @@ import { AutomationForm } from "./AutomationForm";
 import { RunViewer } from "./RunViewer";
 import {
   automation as automationApi,
+  schedule as scheduleApi,
+  webhooks as webhookApi,
   type Automation,
   type AutomationCreateInput,
   type AutomationRun,
@@ -84,12 +86,55 @@ export function AutomationPage({ currentWorkspaceId }: AutomationPageProps) {
     [selectedId, update],
   );
 
+  // Shared delete-with-impact-check. Fetches schedules + webhooks first so
+  // the confirm dialog warns the user that those will cascade-delete (M9).
+  const confirmAndDelete = useCallback(
+    async (id: string, name: string) => {
+      let scheduleCount = 0;
+      let webhookCount = 0;
+      try {
+        const [schedules, hooks] = await Promise.all([
+          scheduleApi.list(id),
+          webhookApi.list(id),
+        ]);
+        scheduleCount = schedules.length;
+        webhookCount = hooks.length;
+      } catch {
+        // Non-fatal: fall through to the basic confirm if the lookup fails.
+      }
+      let msg = `Delete automation "${name}"?`;
+      if (scheduleCount > 0 || webhookCount > 0) {
+        const parts: string[] = [];
+        if (scheduleCount > 0) {
+          parts.push(
+            `${scheduleCount} schedule${scheduleCount === 1 ? "" : "s"}`,
+          );
+        }
+        if (webhookCount > 0) {
+          parts.push(
+            `${webhookCount} webhook${webhookCount === 1 ? "" : "s"}`,
+          );
+        }
+        msg =
+          `Delete automation "${name}"?\n\n` +
+          `This will permanently delete ${parts.join(" and ")} too.`;
+      }
+      if (!confirm(msg)) return false;
+      await remove(id);
+      return true;
+    },
+    [remove],
+  );
+
   const handleDelete = useCallback(async () => {
     if (!selectedId) return;
-    await remove(selectedId);
-    setSelectedId(null);
-    setMode("empty");
-  }, [selectedId, remove]);
+    const name = automations.find((a) => a.id === selectedId)?.name ?? "";
+    const ok = await confirmAndDelete(selectedId, name);
+    if (ok) {
+      setSelectedId(null);
+      setMode("empty");
+    }
+  }, [selectedId, automations, confirmAndDelete]);
 
   if (loading) {
     return (
@@ -107,7 +152,15 @@ export function AutomationPage({ currentWorkspaceId }: AutomationPageProps) {
           selectedId={selectedId}
           onSelect={handleSelect}
           onNew={handleNew}
-          onDelete={(id) => remove(id)}
+          onDelete={(id) => {
+            const name = automations.find((a) => a.id === id)?.name ?? "";
+            void confirmAndDelete(id, name).then((ok) => {
+              if (ok && id === selectedId) {
+                setSelectedId(null);
+                setMode("empty");
+              }
+            });
+          }}
         />
       </div>
       <div className="flex-1 overflow-y-auto">
