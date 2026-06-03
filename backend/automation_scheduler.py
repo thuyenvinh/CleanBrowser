@@ -117,6 +117,23 @@ async def _fire_schedule(schedule: dict[str, Any]) -> None:
                 )
                 return
 
+            # H1: if the schedule is pinned to a profile, verify the profile
+            # is actually running BEFORE creating a run row. Otherwise we'd
+            # spam ``failure`` rows ("profile not running") every minute the
+            # cron matches, polluting the run history and burning quota for
+            # nothing. Skip silently — the next cron occurrence will retry.
+            profile_id = schedule.get("profile_id")
+            if profile_id:
+                from .dependencies import browser_mgr  # noqa: WPS433
+
+                if profile_id not in browser_mgr.running:
+                    logger.info(
+                        "schedule %s: profile %s not running — skipping fire",
+                        schedule_id,
+                        profile_id,
+                    )
+                    return
+
             run = db_automation.create_run(
                 automation_version_id=auto["latest_version_id"],
                 profile_id=schedule.get("profile_id"),

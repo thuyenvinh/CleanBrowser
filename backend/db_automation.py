@@ -438,6 +438,28 @@ def end_run(
         conn.commit()
 
 
+def set_run_initial_vars(run_id: str, vars: dict[str, Any]) -> None:
+    """Persist initial variables for a run (e.g. from a webhook payload).
+
+    Stored in ``result_json`` under a ``__initial_vars__`` marker so the
+    executor can pick them up before the flow starts. ``end_run`` later
+    overwrites ``result_json`` with the run's final variables, so the
+    marker is intentionally transient — it only exists during the
+    ``queued`` → ``running`` window and serves both as a hand-off channel
+    and as an observability breadcrumb (operators can ``SELECT result_json``
+    on a stuck queued row and see the payload that triggered it).
+    """
+    if not _safe_uuid(run_id):
+        return
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE automation_runs SET result_json = %s WHERE id = %s",
+                (_json_param({"__initial_vars__": vars}), run_id),
+            )
+        conn.commit()
+
+
 def get_run(run_id: str) -> dict[str, Any] | None:
     if not _safe_uuid(run_id):
         return None
@@ -915,6 +937,7 @@ __all__ = [
     "create_run",
     "mark_run_running",
     "end_run",
+    "set_run_initial_vars",
     "get_run",
     "list_runs",
     "append_run_log",

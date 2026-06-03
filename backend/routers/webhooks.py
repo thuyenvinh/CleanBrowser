@@ -83,6 +83,24 @@ async def trigger_automation(token: str, request: Request):  # noqa: ARG001
             profile_id=wh.get("profile_id"),
             triggered_by="webhook",
         )
+
+        # H5: extract the JSON body (if any) and treat top-level keys as
+        # initial flow variables, so a flow can branch on integration-
+        # supplied data (e.g. ``{"user_id": 123}``). We accept only object
+        # bodies — arrays / scalars / non-JSON are silently ignored so a
+        # malformed payload still fires the run rather than 4xx'ing the
+        # caller (same defensive posture as the rest of this router).
+        initial_vars: dict = {}
+        try:
+            body = await request.json()
+            if isinstance(body, dict):
+                initial_vars = body
+        except Exception:  # noqa: BLE001 — empty / non-JSON body is fine
+            pass
+
+        if initial_vars:
+            db_automation.set_run_initial_vars(run["id"], initial_vars)
+
         db_automation.mark_webhook_triggered(wh["id"])
 
     # Lazy-import the executor — it lives in routers.automations and
@@ -92,14 +110,20 @@ async def trigger_automation(token: str, request: Request):  # noqa: ARG001
     from .automations import _execute_run_async
 
     asyncio.create_task(
-        _execute_run_async(run["id"], version, wh.get("profile_id"))
+        _execute_run_async(
+            run["id"],
+            version,
+            wh.get("profile_id"),
+            initial_vars=initial_vars or None,
+        )
     )
 
     logger.info(
-        "webhook fire: automation=%s run=%s profile=%s",
+        "webhook fire: automation=%s run=%s profile=%s vars=%d",
         wh["automation_id"],
         run["id"],
         wh.get("profile_id"),
+        len(initial_vars),
     )
 
     return {

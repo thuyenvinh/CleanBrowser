@@ -209,7 +209,10 @@ def _load_and_check_automation(
 
 
 async def _execute_run_async(
-    run_id: str, version: dict[str, Any], profile_id: str | None
+    run_id: str,
+    version: dict[str, Any],
+    profile_id: str | None,
+    initial_vars: dict[str, Any] | None = None,
 ) -> None:
     """Fire-and-forget background task that drives a single run to terminal state.
 
@@ -226,6 +229,15 @@ async def _execute_run_async(
         :func:`playwright.async_api.async_playwright().chromium.connect_over_cdp`,
         grab / create a page, hand it to :class:`FlowInterpreter`, and
         persist the resulting :class:`RunContext` state.
+
+    ``initial_vars`` (H5) carries data supplied by the trigger source
+    (currently: the JSON body of a ``POST /api/webhooks/automation/{token}``
+    request). We deliberately do NOT thread it into the interpreter — that
+    keeps :class:`FlowInterpreter` stable and unaware of trigger channels.
+    Instead we merge it into the final ``result_json`` written by
+    :func:`end_run`, with run-produced vars winning on key conflicts so a
+    flow can still overwrite an input it received. Downstream consumers
+    (UI run detail, debugging tools) see the union.
     """
     db = _db()
     # Register this task so POST /runs/{run_id}/cancel can cancel us. The
@@ -263,10 +275,16 @@ async def _execute_run_async(
                 language=version.get("script_language") or "typescript",
                 cdp_url=cdp_url,
             )
+            # H5: union initial trigger vars with script-produced vars.
+            # Script-produced keys win on conflict (a script can overwrite
+            # an input it received) and ``__initial_vars__`` from the
+            # transient marker row is naturally clobbered here.
+            script_vars = result.get("vars") or {}
+            merged_vars = {**(initial_vars or {}), **script_vars}
             db.end_run(
                 run_id,
                 result["status"],
-                result_json=result.get("vars") or {},
+                result_json=merged_vars,
                 log_text=result.get("log") or "",
                 error_message=result.get("error"),
             )
@@ -309,10 +327,17 @@ async def _execute_run_async(
             )
             interpreter = FlowInterpreter(version.get("dsl_json"), page)
             result_ctx = await interpreter.run()
+            # H5: union initial trigger vars (e.g. webhook body) with
+            # interpreter-produced vars. Flow-produced keys win on
+            # conflict so a flow can still overwrite an input it
+            # received. Done HERE rather than inside FlowInterpreter to
+            # keep the interpreter unaware of trigger channels.
+            flow_vars = getattr(result_ctx, "variables", None) or {}
+            merged_vars = {**(initial_vars or {}), **flow_vars}
             db.end_run(
                 run_id,
                 "success",
-                result_json=getattr(result_ctx, "variables", None),
+                result_json=merged_vars,
                 log_text="\n".join(
                     getattr(result_ctx, "log_lines", []) or []
                 ),

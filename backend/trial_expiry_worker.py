@@ -19,6 +19,23 @@ async def _tick():
     except Exception:
         logger.exception("trial_expiry tick failed")
 
+    # H4: piggy-back the marketplace earnings auto-flip onto this same
+    # worker. The helper exists in db_marketplace but was never wired into
+    # any loop, so ``pending`` rows past the 14-day refund window never
+    # flipped to ``available`` and creators couldn't withdraw. Same tick
+    # cadence as trial expiry is fine — both are slow-moving daily-ish
+    # reconciles. Errors here MUST NOT mask trial expiry above.
+    try:
+        from . import db_marketplace  # noqa: WPS433
+        with system_context():
+            flipped = db_marketplace.mark_earnings_available_due()
+            if flipped > 0:
+                logger.info(
+                    "earnings: flipped %d to available", flipped
+                )
+    except Exception:
+        logger.exception("earnings flip tick failed")
+
 async def _loop(stop):
     logger.info("trial_expiry worker started, interval=%ss", TICK_INTERVAL)
     while not stop.is_set():
