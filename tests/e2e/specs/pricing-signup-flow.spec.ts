@@ -41,8 +41,8 @@ test.describe("pricing → signup flow", () => {
     await expect(page).toHaveURL(/[?&]plan=(pro|starter|team|business|enterprise)/);
 
     // And we should now be on the signup form (email + confirm password).
-    await expect(page.getByLabel(/email/i)).toBeVisible();
-    await expect(page.getByLabel(/confirm/i)).toBeVisible();
+    await expect(page.getByPlaceholder(/^email$/i)).toBeVisible();
+    await expect(page.getByPlaceholder(/confirm/i)).toBeVisible();
   });
 
   test("signing up from the Pro pricing CTA lands on Billing with a Pro trial", async ({
@@ -59,12 +59,12 @@ test.describe("pricing → signup flow", () => {
     // Drive the signup form directly here so we exercise the full flow
     // (the standard ``signup`` helper goes via ``/`` instead of ``/?plan=``).
     const email = uniqueEmail("pricing-signup");
-    await page.getByLabel(/email/i).fill(email);
+    await page.getByPlaceholder(/^email$/i).fill(email);
     await page
-      .getByLabel(/password/i, { exact: true })
+      .getByPlaceholder(/^password/i)
       .first()
       .fill("password123");
-    await page.getByLabel(/confirm/i).fill("password123");
+    await page.getByPlaceholder(/confirm/i).fill("password123");
     await page
       .getByRole("button", { name: /create account|sign up/i })
       .click();

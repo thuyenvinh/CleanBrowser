@@ -542,14 +542,21 @@ def signup(
 
     Returns ``(tenant, user, workspace)``. Caller is responsible for any further
     onboarding (email verification, MFA enrolment, etc.).
+
+    Wrapped in ``system_context`` so the bootstrap INSERTs (tenant→user→workspace
+    →member) succeed under RLS RESTRICTIVE before any per-request tenant GUC
+    has been pinned for the new user.
     """
+    from .middleware_rls import system_context
+
     normalized_email = _normalize_email(email)
     derived_tenant_name = tenant_name or normalized_email.split("@", 1)[0]
 
-    tenant = create_tenant(derived_tenant_name)
-    user = create_user(tenant["id"], normalized_email, password)
-    workspace = create_workspace(tenant["id"], "Default", user["id"])
-    add_workspace_member(workspace["id"], user["id"], "owner")
+    with system_context():
+        tenant = create_tenant(derived_tenant_name)
+        user = create_user(tenant["id"], normalized_email, password)
+        workspace = create_workspace(tenant["id"], "Default", user["id"])
+        add_workspace_member(workspace["id"], user["id"], "owner")
     # Bootstrap a 14-day Pro trial so new users can evaluate paid features
     # without going through checkout. Wrapped in try/except so any billing
     # module hiccup (missing seed, transient DB error) cannot break the

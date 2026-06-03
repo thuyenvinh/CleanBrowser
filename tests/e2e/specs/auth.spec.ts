@@ -53,9 +53,9 @@ test.describe("auth", () => {
 
     // Bad password first.
     await page.goto("/");
-    await page.getByLabel(/email/i).fill(email);
+    await page.getByPlaceholder(/^email$/i).fill(email);
     await page
-      .getByLabel(/password/i, { exact: true })
+      .getByPlaceholder(/^password/i)
       .first()
       .fill("wrong-password");
     await page.getByRole("button", { name: /^(sign in|log in)$/i }).click();
@@ -112,12 +112,12 @@ test.describe("auth", () => {
     await snap(page, "signup-happy", "01-empty-form");
 
     const email = uniqueEmail("signup-happy");
-    await page.getByLabel(/email/i).fill(email);
+    await page.getByPlaceholder(/^email$/i).fill(email);
     await page
-      .getByLabel(/password/i, { exact: true })
+      .getByPlaceholder(/^password/i)
       .first()
       .fill("password123");
-    await page.getByLabel(/confirm/i).fill("password123");
+    await page.getByPlaceholder(/confirm/i).fill("password123");
     await snap(page, "signup-happy", "02-form-filled");
 
     await page
@@ -137,9 +137,9 @@ test.describe("auth", () => {
     await page.goto("/");
     await snap(page, "login-validation", "01-blank");
 
-    await page.getByLabel(/email/i).fill("not-an-email");
+    await page.getByPlaceholder(/^email$/i).fill("not-an-email");
     await page
-      .getByLabel(/password/i, { exact: true })
+      .getByPlaceholder(/^password/i)
       .first()
       .fill("password123");
     await page
@@ -150,7 +150,7 @@ test.describe("auth", () => {
 
     // Either the HTML5 validation kicked in (email field is :invalid) or the
     // app surfaced an inline error message.
-    const emailField = page.getByLabel(/email/i);
+    const emailField = page.getByPlaceholder(/^email$/i);
     const inlineError = page.getByText(
       /invalid email|valid email|email.*format|enter.*email/i,
     );
@@ -175,9 +175,9 @@ test.describe("auth", () => {
     await snap(page, "login-401", "01-logged-out");
 
     await page.goto("/");
-    await page.getByLabel(/email/i).fill(email);
+    await page.getByPlaceholder(/^email$/i).fill(email);
     await page
-      .getByLabel(/password/i, { exact: true })
+      .getByPlaceholder(/^password/i)
       .first()
       .fill("definitely-wrong-pw");
     await page.getByRole("button", { name: /^(sign in|log in)$/i }).click();
@@ -240,7 +240,7 @@ test.describe("auth", () => {
     await snap(page, "forgot-pw", "02-form");
 
     const email = uniqueEmail("forgot");
-    await page.getByLabel(/email/i).fill(email);
+    await page.getByPlaceholder(/^email$/i).fill(email);
     await page
       .getByRole("button", { name: /reset|send|submit/i })
       .first()

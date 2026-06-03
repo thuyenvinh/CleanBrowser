@@ -124,7 +124,12 @@ class AuthMiddleware:
         path = scope["path"]
 
         # Skip auth for exempt endpoints and non-API paths (static frontend)
-        if path in _AUTH_EXEMPT or not path.startswith("/api/"):
+        from .dependencies import _AUTH_EXEMPT_PREFIXES
+        if (
+            path in _AUTH_EXEMPT
+            or any(path.startswith(p) for p in _AUTH_EXEMPT_PREFIXES)
+            or not path.startswith("/api/")
+        ):
             await self.app(scope, receive, send)
             return
 

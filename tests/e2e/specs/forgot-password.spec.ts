@@ -36,7 +36,7 @@ test.describe("forgot password", () => {
     const heading = page.getByRole("heading", {
       name: /forgot|reset.*password/i,
     });
-    const emailField = page.getByLabel(/email/i).first();
+    const emailField = page.getByPlaceholder(/^email$/i).first();
     await expect(heading.first().or(emailField)).toBeVisible();
     await snap(page, "forgot-open-02-form");
   });
@@ -53,7 +53,7 @@ test.describe("forgot password", () => {
       .first()
       .click();
 
-    await page.getByLabel(/email/i).first().fill("nobody@example.test");
+    await page.getByPlaceholder(/^email$/i).first().fill("nobody@e2e.example.com");
     await snap(page, "forgot-submit-02-filled");
 
     await page
@@ -80,7 +80,7 @@ test.describe("forgot password", () => {
 
     // Either we see a password field (form rendered) or an "invalid token"
     // error — both are valid UI states.
-    const pwField = page.getByLabel(/password/i, { exact: true }).first();
+    const pwField = page.getByPlaceholder(/^password/i).first();
     const invalidMsg = page
       .getByText(/invalid|expired|not (a )?valid/i)
       .first();
@@ -88,7 +88,7 @@ test.describe("forgot password", () => {
     if ((await pwField.count()) > 0) {
       await pwField.fill("123");
       // Try to find a confirm field — fill same weak value.
-      const confirm = page.getByLabel(/confirm/i).first();
+      const confirm = page.getByPlaceholder(/confirm/i).first();
       if ((await confirm.count()) > 0) {
         await confirm.fill("123");
       }

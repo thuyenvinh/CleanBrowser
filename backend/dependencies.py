@@ -43,8 +43,24 @@ _AUTH_EXEMPT = frozenset(
         "/api/auth/signup",
         "/api/auth/logout",
         "/api/auth/me",
+        "/api/auth/forgot-password",
+        "/api/auth/reset-password",
+        "/api/auth/verify-email",
         "/api/status",
+        "/api/status/public",
+        "/api/billing/plans/public",
     }
+)
+
+# Prefix patterns exempt from auth middleware (OAuth callbacks, webhook
+# receivers, public file serving). These never require a session — they
+# either carry their own auth token in the URL or are public marketing pages.
+_AUTH_EXEMPT_PREFIXES: tuple[str, ...] = (
+    "/api/auth/oauth/",
+    "/api/webhooks/",
+    "/api/billing/webhook",
+    "/api/billing/vnpay/return",
+    "/api/marketplace/install/complete",
 )
 
 # Name of the JWT session cookie issued by /api/auth/{signup,login}.
