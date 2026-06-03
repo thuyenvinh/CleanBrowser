@@ -69,8 +69,12 @@ test.describe("pricing → signup flow", () => {
       .getByRole("button", { name: /create account|sign up/i })
       .click();
 
-    // Land on the app shell.
-    await page.waitForURL(/\/$/);
+    // Land on the app shell — wait for one of the sidebar buttons rather
+    // than a URL pattern, since the ?plan=pro query persists on the URL.
+    await page
+      .getByRole("button", { name: /profiles|proxies|automations/i })
+      .first()
+      .waitFor({ timeout: 15_000 });
     await page.getByRole("button", { name: /billing/i }).first().click();
 
     // Pro plan with a trial badge should be visible on the Billing tab.

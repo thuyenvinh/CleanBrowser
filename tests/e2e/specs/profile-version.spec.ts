@@ -23,7 +23,7 @@ async function createProfile(
     .getByRole("button", { name: /save|create/i })
     .first()
     .click();
-  await expect(page.getByText(name)).toBeVisible();
+  await expect(page.getByText(name).first()).toBeVisible();
 }
 
 async function openEditView(

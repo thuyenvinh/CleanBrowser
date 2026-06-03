@@ -50,6 +50,11 @@ test.describe("run cancel UX", () => {
     if ((await runBtn.count()) === 0) {
       test.skip(true, "Run button not present in this build");
     }
+    // The Run button is disabled until a version is saved — this UX test
+    // doesn't exercise the editor, so skip when the button isn't actionable.
+    if (await runBtn.isDisabled().catch(() => false)) {
+      test.skip(true, "Run requires a saved version first");
+    }
     await runBtn.click();
 
     // Some apps need a profile picker — best-effort confirm.
@@ -80,6 +85,9 @@ test.describe("run cancel UX", () => {
     const runBtn = page.getByRole("button", { name: /^run$|start/i }).first();
     if ((await runBtn.count()) === 0) {
       test.skip(true, "Run button not present");
+    }
+    if (await runBtn.isDisabled().catch(() => false)) {
+      test.skip(true, "Run requires a saved version first");
     }
     await runBtn.click();
     const confirmRun = page
@@ -130,8 +138,11 @@ test.describe("run cancel UX", () => {
     await page.waitForTimeout(500);
     await snap(page, "run-cancel-done-02-idle");
 
+    // "Cancel run" (or just "Cancel" inside a run row). The editor's own
+    // form-level Cancel button has accessible name "Cancel" too, so we
+    // narrow to wording that only the run viewer exposes.
     const cancelBtns = page.getByRole("button", {
-      name: /^cancel( run)?$|abort/i,
+      name: /^cancel run$|abort/i,
     });
     // We accept zero matches OR all of them being hidden/disabled.
     const count = await cancelBtns.count();

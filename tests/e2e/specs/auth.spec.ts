@@ -290,13 +290,8 @@ test.describe("auth", () => {
       expect(await plans.count()).toBeGreaterThanOrEqual(4);
     }
 
-    // Click the Pro trial CTA.
-    const proCta = page
-      .locator(
-        '[data-plan="pro"] button, [data-testid*="pro"] button, :has-text("Pro") >> button',
-      )
-      .filter({ hasText: /trial|choose|start/i })
-      .first();
+    // Click the Pro trial CTA — PricingPage card has data-plan="<plan-id>".
+    const proCta = page.locator('[data-plan="pro"] button').first();
     if ((await proCta.count()) > 0) {
       await proCta.click();
     } else {

@@ -61,6 +61,7 @@ export function PricingPage({ onStartTrial, onLogin }: PricingPageProps) {
               return (
                 <div
                   key={p.id}
+                  data-plan={p.id}
                   className={`border rounded-lg p-5 flex flex-col ${
                     isPro
                       ? "border-accent/60 bg-accent/5"

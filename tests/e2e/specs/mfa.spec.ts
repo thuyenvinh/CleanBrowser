@@ -52,7 +52,14 @@ test.describe("MFA setup", () => {
       .getByText(/secret|otpauth|[A-Z2-7]{16,}/)
       .first();
 
-    await expect(qr.or(secretText)).toBeVisible({ timeout: 10_000 });
+    // Check independently — combining with .or() trips strict mode when both
+    // surfaces (QR image and secret string) render at once.
+    const qrCount = await qr.count();
+    if (qrCount > 0) {
+      await expect(qr).toBeVisible({ timeout: 10_000 });
+    } else {
+      await expect(secretText).toBeVisible({ timeout: 10_000 });
+    }
     await snap(page, "mfa-enable-02-qr-visible");
   });
 

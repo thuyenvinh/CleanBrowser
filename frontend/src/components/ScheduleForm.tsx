@@ -229,8 +229,8 @@ export function ScheduleForm({
 
       <div className="space-y-3">
         <div>
-          <label className="label">Cron expression</label>
-          <input
+          <label className="label" htmlFor="pf-cron-expression-1">Cron expression</label>
+              <input id="pf-cron-expression-1"
             className="input font-mono"
             value={form.cron}
             onChange={(e) => set("cron", e.target.value)}
@@ -248,8 +248,8 @@ export function ScheduleForm({
 
         <div className="grid grid-cols-2 gap-3">
           <div>
-            <label className="label">Timezone</label>
-            <select
+            <label className="label" htmlFor="pf-timezone-2">Timezone</label>
+              <select id="pf-timezone-2"
               className="input"
               value={form.timezone}
               onChange={(e) => set("timezone", e.target.value)}
@@ -262,8 +262,8 @@ export function ScheduleForm({
             </select>
           </div>
           <div>
-            <label className="label">Profile</label>
-            <select
+            <label className="label" htmlFor="pf-profile-3">Profile</label>
+              <select id="pf-profile-3"
               className="input"
               value={form.profile_id}
               onChange={(e) => set("profile_id", e.target.value)}

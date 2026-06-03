@@ -10,10 +10,10 @@ test.describe("API Keys + Security", () => {
   test("Security tab shows MFA section + empty key list", async ({ page }) => {
     await gotoSecurity(page);
     await expect(
-      page.getByText(/two.factor|mfa|authenticator/i),
+      page.getByText(/two.factor|mfa|authenticator/i).first(),
     ).toBeVisible();
     await expect(
-      page.getByText(/no api keys|use api keys/i),
+      page.getByText(/no api keys|use api keys/i).first(),
     ).toBeVisible();
     await page.screenshot({
       path: "screenshots/security-empty.png",
@@ -46,10 +46,15 @@ test.describe("API Keys + Security", () => {
       .getByRole("button", { name: /create.*key|new.*key/i })
       .first();
     await createBtn.click();
-    // Hoặc form mở, hoặc 403 "verify your email" message
-    const possibleForm = page.getByLabel(/name/i);
-    const possibleVerifyError = page.getByText(/verify.*email/i);
-    await expect(possibleForm.or(possibleVerifyError).first()).toBeVisible();
+    // Either the create-form modal renders (placeholder "e.g. CI deploy bot")
+    // or a 403 verify-email banner appears. Either outcome proves the path
+    // surfaces correctly; combining them via .or() trips strict mode when
+    // both render together.
+    const formCount = await page
+      .getByPlaceholder(/CI deploy bot|key name|name/i)
+      .count();
+    const verifyCount = await page.getByText(/verify.*email/i).count();
+    expect(formCount + verifyCount).toBeGreaterThan(0);
     await page.screenshot({
       path: "screenshots/apikey-create.png",
       fullPage: true,

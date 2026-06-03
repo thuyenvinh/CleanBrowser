@@ -173,7 +173,10 @@ async def auth_status(request: starlette.requests.Request):
 async def auth_signup(
     request: Request, body: SignupRequest, response: Response
 ):
-    existing = db_auth.get_user_by_email(body.email)
+    from ..middleware_rls import system_context
+
+    with system_context():
+        existing = db_auth.get_user_by_email(body.email)
     if existing is not None:
         raise HTTPException(status_code=409, detail="email already registered")
 
@@ -238,7 +241,13 @@ async def auth_login(request: Request, response: Response):
         except ValidationError as exc:
             raise HTTPException(status_code=422, detail=exc.errors())
 
-        user = db_auth.get_user_by_email(body.email)
+        # Anonymous lookup runs before any tenant GUC is set — bypass RLS
+        # so the SELECT can find the user (same rationale as in signup /
+        # the auth-status path).
+        from ..middleware_rls import system_context
+
+        with system_context():
+            user = db_auth.get_user_by_email(body.email)
         # Generic 401 — never leak whether the email exists.
         if user is None or not db_auth.verify_password(
             body.password, user["password_hash"]
@@ -866,19 +875,22 @@ async def forgot_password(request: Request, body: ForgotPasswordRequest):
     is wrapped in a ``try`` so a flaky SMTP server can't turn the silent-
     success contract into a 500.
     """
-    user = db_auth.get_user_by_email(body.email)
-    if user:
-        try:
-            _, token = db_auth.create_password_reset_token(user["id"])
-            # ``request.base_url`` already ends with ``/`` so we don't add
-            # another. Lands on the SPA, which mounts the ResetPasswordPage
-            # on ``/reset-password`` and pulls ``?token=`` off the query.
-            reset_url = f"{request.base_url}reset-password?token={token}"
-            email_sender.send_password_reset_email(user["email"], reset_url)
-        except Exception:
-            logger.exception(
-                "forgot-password send failed for user=%s", user.get("id")
-            )
+    from ..middleware_rls import system_context
+
+    with system_context():
+        user = db_auth.get_user_by_email(body.email)
+        if user:
+            try:
+                _, token = db_auth.create_password_reset_token(user["id"])
+                # ``request.base_url`` already ends with ``/`` so we don't add
+                # another. Lands on the SPA, which mounts the ResetPasswordPage
+                # on ``/reset-password`` and pulls ``?token=`` off the query.
+                reset_url = f"{request.base_url}reset-password?token={token}"
+                email_sender.send_password_reset_email(user["email"], reset_url)
+            except Exception:
+                logger.exception(
+                    "forgot-password send failed for user=%s", user.get("id")
+                )
     return {
         "message": (
             "If that email exists, a reset link has been sent. "
@@ -897,14 +909,18 @@ async def reset_password(request: Request, body: ResetPasswordRequest):
     can't silently weaken the floor. Token consumption is one-shot — a
     second POST with the same token gets the generic 400.
     """
-    user_id = db_auth.consume_password_reset_token(body.token)
-    if not user_id:
-        raise HTTPException(
-            status_code=400, detail="Invalid or expired reset link"
-        )
-    if len(body.new_password) < 8:
-        raise HTTPException(
-            status_code=400, detail="Password must be at least 8 characters"
-        )
-    db_auth.update_user_password_by_id(user_id, body.new_password)
+    # Anonymous endpoint — bypass RLS for the token lookup + password update.
+    from ..middleware_rls import system_context
+
+    with system_context():
+        user_id = db_auth.consume_password_reset_token(body.token)
+        if not user_id:
+            raise HTTPException(
+                status_code=400, detail="Invalid or expired reset link"
+            )
+        if len(body.new_password) < 8:
+            raise HTTPException(
+                status_code=400, detail="Password must be at least 8 characters"
+            )
+        db_auth.update_user_password_by_id(user_id, body.new_password)
     return {"reset": True}
