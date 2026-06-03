@@ -534,6 +534,82 @@ def signup(
 
 
 # ---------------------------------------------------------------------------
+# Password reset tokens (migration 0027 — bug C6 closure)
+#
+# Same shape as ``email_verification_tokens`` below: a single URL-safe random
+# blob is emailed once, only its SHA-256 hash is persisted, and consumption
+# is one-shot via ``used_at``. TTL defaults to 1h (vs 24h for email verify)
+# because a leaked reset link grants account takeover, not just badge-removal.
+# ---------------------------------------------------------------------------
+
+
+def create_password_reset_token(
+    user_id: str, ttl_hours: int = 1
+) -> tuple[dict[str, Any], str]:
+    """Mint a fresh password-reset token for ``user_id``.
+
+    Returns ``(record, plaintext_token)``. The plaintext is shown ONCE to the
+    caller (so it can be emailed) and never persisted.
+    """
+    token = secrets.token_urlsafe(_TOKEN_BYTES)
+    token_hash = _hash_token(token)
+    token_id = str(uuid.uuid4())
+    expires_at = _now_dt() + datetime.timedelta(hours=ttl_hours)
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO password_reset_tokens
+                       (id, user_id, token_hash, expires_at)
+                   VALUES (%s, %s, %s, %s)
+                   RETURNING *""",
+                (token_id, user_id, token_hash, expires_at),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row), token  # type: ignore[return-value]
+
+
+def consume_password_reset_token(token: str) -> str | None:
+    """Verify ``token``, mark it used, return its ``user_id`` on success.
+
+    Returns ``None`` if the token is unknown, expired, or already consumed —
+    callers should treat all three identically (a generic "invalid link"
+    response) so we don't leak whether a token ever existed.
+    """
+    token_hash = _hash_token(token)
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT id, user_id FROM password_reset_tokens
+                   WHERE token_hash = %s
+                     AND used_at IS NULL
+                     AND expires_at > now()""",
+                (token_hash,),
+            )
+            row = cur.fetchone()
+            if not row:
+                return None
+            cur.execute(
+                """UPDATE password_reset_tokens
+                   SET used_at = now()
+                   WHERE id = %s""",
+                (row["id"],),
+            )
+        conn.commit()
+    return str(row["user_id"])
+
+
+def update_user_password_by_id(user_id: str, new_password: str) -> bool:
+    """Update the password hash for ``user_id``.
+
+    Thin alias over :func:`update_user_password` so the password-reset
+    router code reads naturally without having to know the existing helper
+    already keyed on ``user_id``.
+    """
+    return update_user_password(user_id, new_password)
+
+
+# ---------------------------------------------------------------------------
 # Email verification tokens (migration 0011)
 #
 # One-shot tokens emailed at signup / resend. The plaintext blob is only

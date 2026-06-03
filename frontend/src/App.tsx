@@ -10,6 +10,8 @@ import { LaunchButton } from "./components/LaunchButton";
 import { StatusIndicator } from "./components/StatusIndicator";
 import { LoginPage } from "./components/LoginPage";
 import { SignupPage } from "./components/SignupPage";
+import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
+import { ResetPasswordPage } from "./components/ResetPasswordPage";
 import { PricingPage } from "./components/PricingPage";
 import { WorkspaceSelector } from "./components/WorkspaceSelector";
 import { ProxyPage } from "./components/ProxyPage";
@@ -22,7 +24,7 @@ import { ApiKeysPage } from "./components/ApiKeysPage";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
-type AuthView = "login" | "signup" | "pricing";
+type AuthView = "login" | "signup" | "pricing" | "forgot";
 type Tab = "profiles" | "proxies" | "automations" | "marketplace" | "billing" | "apikeys";
 
 // Public ``/status`` route is evaluated once at module-load before any
@@ -32,9 +34,48 @@ type Tab = "profiles" | "proxies" | "automations" | "marketplace" | "billing" | 
 const IS_PUBLIC_STATUS_ROUTE =
   typeof window !== "undefined" && window.location.pathname === "/status";
 
+// Same trick for the reset-password landing page: the email link points at
+// ``/reset-password?token=…`` and must render BEFORE any auth state machine
+// runs — otherwise an unauthenticated user clicking the link gets bounced
+// to /login instead of the reset form. We accept either the path
+// ``/reset-password`` OR the query flag ``?reset=1`` so static hosts that
+// can't add an SPA fallback route still work.
+const RESET_PASSWORD_TOKEN: string | null = (() => {
+  if (typeof window === "undefined") return null;
+  try {
+    const onPath = window.location.pathname === "/reset-password";
+    const params = new URLSearchParams(window.location.search);
+    const flag = params.get("reset") === "1";
+    if (!onPath && !flag) return null;
+    return params.get("token") ?? "";
+  } catch {
+    return null;
+  }
+})();
+
 export default function App() {
   if (IS_PUBLIC_STATUS_ROUTE) {
     return <StatusPage />;
+  }
+
+  if (RESET_PASSWORD_TOKEN !== null) {
+    const leaveResetFlow = () => {
+      try {
+        window.history.replaceState({}, "", "/");
+      } catch {
+        /* no-op in non-browser test envs */
+      }
+      // Hard navigation so the App component re-evaluates the module-level
+      // ``RESET_PASSWORD_TOKEN`` snapshot against the cleaned URL.
+      window.location.assign("/");
+    };
+    return (
+      <ResetPasswordPage
+        token={RESET_PASSWORD_TOKEN}
+        onSuccess={leaveResetFlow}
+        onCancel={leaveResetFlow}
+      />
+    );
   }
 
   const [authState, setAuthState] = useState<AuthState>("checking");
@@ -143,6 +184,11 @@ export default function App() {
         />
       );
     }
+    if (authView === "forgot") {
+      return (
+        <ForgotPasswordPage onSwitchToLogin={() => setAuthView("login")} />
+      );
+    }
     return (
       <LoginPage
         onSuccess={() => {
@@ -151,6 +197,7 @@ export default function App() {
         }}
         onLegacySuccess={() => setAuthState("ok")}
         onSwitchToSignup={() => setAuthView("signup")}
+        onSwitchToForgot={() => setAuthView("forgot")}
       />
     );
   }

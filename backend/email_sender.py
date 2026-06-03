@@ -91,3 +91,27 @@ def send_verification_email(to: str, verify_url: str) -> bool:
         "Expires in 24 hours.</p>"
     )
     return send(to, subject, text, html)
+
+
+def send_password_reset_email(to: str, reset_url: str) -> bool:
+    """Render + send the password-reset message for ``to``.
+
+    Wording is deliberately reassuring for the not-me case: a reset email
+    landing in the wrong inbox shouldn't read like an attack — it should
+    tell the recipient to ignore it. The 1h expiry mirrors the token TTL
+    in :func:`backend.db_auth.create_password_reset_token`.
+    """
+    subject = "Reset your CleanBrowser password"
+    text = (
+        "Someone (hopefully you) requested a password reset. "
+        "Click to set a new password:\n\n"
+        f"{reset_url}\n\n"
+        "Link expires in 1 hour. "
+        "If you didn't request this, ignore this email."
+    )
+    html = (
+        f'<p>Click <a href="{reset_url}">here to reset password</a>. '
+        "Expires in 1 hour.</p>"
+        "<p>If you didn't request this, ignore this email.</p>"
+    )
+    return send(to, subject, text, html)

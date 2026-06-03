@@ -137,6 +137,38 @@ export const verification = {
 };
 
 /**
+ * Password reset client. Backed by the endpoints added in
+ * ``backend/routers/auth.py`` for the bug C6 closure:
+ *
+ *   POST /api/auth/forgot-password   { email }       → always 200 (anti-enumeration)
+ *   POST /api/auth/reset-password    { token, new_password } → { reset: true } | 400
+ *
+ * Both are unauthenticated — the reset link in the email is the proof of
+ * email control, the same way the email-verification GET works.
+ */
+export interface ForgotPasswordResult {
+  message: string;
+}
+
+export interface ResetPasswordResult {
+  reset: boolean;
+}
+
+export const passwordReset = {
+  forgot: (email: string) =>
+    authRequest<ForgotPasswordResult>("/api/auth/forgot-password", {
+      method: "POST",
+      body: JSON.stringify({ email }),
+    }),
+
+  reset: (token: string, new_password: string) =>
+    authRequest<ResetPasswordResult>("/api/auth/reset-password", {
+      method: "POST",
+      body: JSON.stringify({ token, new_password }),
+    }),
+};
+
+/**
  * OAuth (social login) client helpers.
  *
  * The full OAuth dance is server-driven — the frontend's only jobs are to

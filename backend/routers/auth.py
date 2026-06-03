@@ -37,11 +37,13 @@ from ..models import (
     ApiKeyCreateResponse,
     ApiKeyPublic,
     EmailLoginRequest,
+    ForgotPasswordRequest,
     LoginRequest,
     MfaDisableRequest,
     MfaEnableRequest,
     MfaSetupResponse,
     ResendVerificationResponse,
+    ResetPasswordRequest,
     SignupRequest,
     UserPublic,
     Workspace,
@@ -761,3 +763,83 @@ async def revoke_api_key_route(
         raise HTTPException(status_code=404, detail="api key not found")
     db_auth.revoke_api_key(key_id)
     return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+# ---------------------------------------------------------------------------
+# Password reset (bug C6 closure)
+#
+# Flow (mirrors email verification above):
+#   1. Unauthenticated POST /forgot-password {email}. We respond 200 with a
+#      generic message regardless of whether the email exists — this is a
+#      hard requirement, otherwise the endpoint becomes a username-
+#      enumeration oracle.
+#   2. If the email DOES exist, we mint a 1h SHA-256-stored token (see
+#      :func:`backend.db_auth.create_password_reset_token`) and email the
+#      plaintext as a link pointing at the SPA's ``/reset-password?token=…``
+#      route. The SPA collects the new password and POSTs to
+#      /reset-password.
+#   3. /reset-password consumes the token (one-shot) and updates the
+#      ``users.password_hash``. Sessions issued before the reset stay valid
+#      because they live as opaque JWTs — that's an acceptable trade-off
+#      for now; a follow-up wave can wire a per-user version counter into
+#      :mod:`backend.auth_tokens` to invalidate old cookies on reset.
+#
+# Rate-limits are deliberately tight: forgot is bound at 5/h to slow down
+# email-bombing a single victim; reset is 10/h because a legitimate user
+# might fat-finger the new password and retry a couple of times.
+# ---------------------------------------------------------------------------
+
+
+@router.post("/forgot-password")
+@limiter.limit("5/hour")
+async def forgot_password(request: Request, body: ForgotPasswordRequest):
+    """Kick off the reset flow for ``body.email``.
+
+    Always returns 200 with the same neutral message — whether or not the
+    email maps to a known user — so attackers cannot use this endpoint to
+    discover which addresses have CleanBrowser accounts. The send itself
+    is wrapped in a ``try`` so a flaky SMTP server can't turn the silent-
+    success contract into a 500.
+    """
+    user = db_auth.get_user_by_email(body.email)
+    if user:
+        try:
+            _, token = db_auth.create_password_reset_token(user["id"])
+            # ``request.base_url`` already ends with ``/`` so we don't add
+            # another. Lands on the SPA, which mounts the ResetPasswordPage
+            # on ``/reset-password`` and pulls ``?token=`` off the query.
+            reset_url = f"{request.base_url}reset-password?token={token}"
+            email_sender.send_password_reset_email(user["email"], reset_url)
+        except Exception:
+            logger.exception(
+                "forgot-password send failed for user=%s", user.get("id")
+            )
+    return {
+        "message": (
+            "If that email exists, a reset link has been sent. "
+            "Check your inbox (and spam)."
+        )
+    }
+
+
+@router.post("/reset-password")
+@limiter.limit("10/hour")
+async def reset_password(request: Request, body: ResetPasswordRequest):
+    """Consume a reset token and set the user's new password.
+
+    The Pydantic model already enforces ``min_length=8`` on
+    ``new_password`` but we re-check explicitly so a future schema relax
+    can't silently weaken the floor. Token consumption is one-shot — a
+    second POST with the same token gets the generic 400.
+    """
+    user_id = db_auth.consume_password_reset_token(body.token)
+    if not user_id:
+        raise HTTPException(
+            status_code=400, detail="Invalid or expired reset link"
+        )
+    if len(body.new_password) < 8:
+        raise HTTPException(
+            status_code=400, detail="Password must be at least 8 characters"
+        )
+    db_auth.update_user_password_by_id(user_id, body.new_password)
+    return {"reset": True}

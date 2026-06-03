@@ -17,6 +17,9 @@ interface LoginPageProps {
   onLegacySuccess: () => void;
   /** Switch to the signup view. */
   onSwitchToSignup: () => void;
+  /** Switch to the forgot-password view. Optional so older mounts (legacy-only
+   *  deployments, tests) don't have to wire the handler. */
+  onSwitchToForgot?: () => void;
   /** If true, show only the legacy token field (no email/password). */
   legacyOnly?: boolean;
 }
@@ -25,6 +28,7 @@ export function LoginPage({
   onSuccess,
   onLegacySuccess,
   onSwitchToSignup,
+  onSwitchToForgot,
   legacyOnly = false,
 }: LoginPageProps) {
   const [mode, setMode] = useState<"credentials" | "token">(
@@ -188,6 +192,17 @@ export function LoginPage({
                 className="text-accent hover:underline"
               >
                 Sign up
+              </button>
+            </p>
+          )}
+          {mode === "credentials" && onSwitchToForgot && (
+            <p className="text-xs text-gray-500">
+              <button
+                type="button"
+                onClick={onSwitchToForgot}
+                className="text-accent hover:underline"
+              >
+                Forgot password?
               </button>
             </p>
           )}
