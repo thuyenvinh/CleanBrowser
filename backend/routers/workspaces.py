@@ -45,6 +45,7 @@ from ..models import (
     InviteMemberRequest,
     UpdateMemberRoleRequest,
     WorkspaceCreate,
+    WorkspaceUpdate,
 )
 
 logger = logging.getLogger("cloakbrowser.workspaces")
@@ -176,6 +177,61 @@ async def get_workspace_detail(
         "created_at": ws["created_at"],
         "members": [_member_public(m) for m in members],
     }
+
+
+@router.put("/{workspace_id}")
+async def update_workspace(
+    workspace_id: str,
+    body: WorkspaceUpdate,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> dict[str, Any]:
+    """Rename a workspace. Requires ``owner`` or ``admin`` role."""
+    _check_member_role(workspace_id, user, _MEMBER_MUTATION_ROLES)
+    try:
+        updated = db_auth.update_workspace_name(workspace_id, body.name)
+    except Exception:
+        logger.exception("update_workspace_name failed (ws=%s)", workspace_id)
+        raise HTTPException(status_code=500, detail="failed to rename workspace")
+    if updated is None:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    role = db_auth.get_member_role(workspace_id, user["id"])
+    return {
+        "id": updated["id"],
+        "tenant_id": updated["tenant_id"],
+        "name": updated["name"],
+        "owner_user_id": updated["owner_user_id"],
+        "created_at": updated["created_at"],
+        "role": role,
+    }
+
+
+@router.delete(
+    "/{workspace_id}",
+    status_code=status.HTTP_204_NO_CONTENT,
+)
+async def delete_workspace_endpoint(
+    workspace_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> Response:
+    """Delete a workspace. Owner only; refuses to delete the user's last one."""
+    _check_member_role(workspace_id, user, ("owner",))
+
+    # Prevent orphaning the user: they must keep at least one workspace.
+    user_workspaces = db_auth.list_workspaces_for_user(user["id"])
+    if len(user_workspaces) <= 1:
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete your only workspace",
+        )
+
+    try:
+        removed = db_auth.delete_workspace(workspace_id)
+    except Exception:
+        logger.exception("delete_workspace failed (ws=%s)", workspace_id)
+        raise HTTPException(status_code=500, detail="failed to delete workspace")
+    if not removed:
+        raise HTTPException(status_code=404, detail="Workspace not found")
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
 # ---------------------------------------------------------------------------

@@ -358,6 +358,40 @@ def get_user_by_email_in_tenant(
             return _row_to_dict(cur.fetchone())
 
 
+def update_workspace_name(
+    workspace_id: str, name: str
+) -> dict[str, Any] | None:
+    """Rename a workspace; return the updated row or ``None`` if not found."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """UPDATE workspaces SET name = %s
+                   WHERE id = %s
+                   RETURNING *""",
+                (name, workspace_id),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row) if row else None
+
+
+def delete_workspace(workspace_id: str) -> bool:
+    """Delete a workspace row. Membership / child rows are removed via the
+    ``ON DELETE CASCADE`` constraints on ``workspace_members`` and friends.
+
+    Returns ``True`` if a row was deleted.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM workspaces WHERE id = %s",
+                (workspace_id,),
+            )
+            removed = cur.rowcount > 0
+        conn.commit()
+    return removed
+
+
 # ---------------------------------------------------------------------------
 # API keys
 # ---------------------------------------------------------------------------
