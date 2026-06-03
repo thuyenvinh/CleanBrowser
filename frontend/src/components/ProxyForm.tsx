@@ -157,8 +157,8 @@ export function ProxyForm({ proxy, onSave, onDelete, onCancel }: ProxyFormProps)
           </h3>
           <div className="space-y-3">
             <div>
-              <label className="label">Name</label>
-              <input
+              <label className="label" htmlFor="pf-name-1">Name</label>
+              <input id="pf-name-1"
                 className="input"
                 value={form.name}
                 onChange={(e) => set("name", e.target.value)}
@@ -169,8 +169,8 @@ export function ProxyForm({ proxy, onSave, onDelete, onCancel }: ProxyFormProps)
               )}
             </div>
             <div>
-              <label className="label">Provider</label>
-              <select
+              <label className="label" htmlFor="pf-provider-2">Provider</label>
+              <select id="pf-provider-2"
                 className="input"
                 value={form.provider}
                 onChange={(e) => set("provider", e.target.value)}
@@ -192,8 +192,8 @@ export function ProxyForm({ proxy, onSave, onDelete, onCancel }: ProxyFormProps)
           <div className="space-y-3">
             <div className="grid grid-cols-3 gap-3">
               <div>
-                <label className="label">Type</label>
-                <select
+                <label className="label" htmlFor="pf-type-3">Type</label>
+              <select id="pf-type-3"
                   className="input"
                   value={form.type}
                   onChange={(e) => set("type", e.target.value)}
@@ -206,8 +206,8 @@ export function ProxyForm({ proxy, onSave, onDelete, onCancel }: ProxyFormProps)
                 </select>
               </div>
               <div className="col-span-2">
-                <label className="label">Host</label>
-                <input
+                <label className="label" htmlFor="pf-host-4">Host</label>
+              <input id="pf-host-4"
                   className="input"
                   value={form.host}
                   onChange={(e) => set("host", e.target.value)}
@@ -219,8 +219,8 @@ export function ProxyForm({ proxy, onSave, onDelete, onCancel }: ProxyFormProps)
               </div>
             </div>
             <div>
-              <label className="label">Port</label>
-              <input
+              <label className="label" htmlFor="pf-port-5">Port</label>
+              <input id="pf-port-5"
                 className="input no-spin"
                 type="number"
                 value={form.port}
@@ -242,8 +242,8 @@ export function ProxyForm({ proxy, onSave, onDelete, onCancel }: ProxyFormProps)
           </h3>
           <div className="space-y-3">
             <div>
-              <label className="label">Username</label>
-              <input
+              <label className="label" htmlFor="pf-username-6">Username</label>
+              <input id="pf-username-6"
                 className="input"
                 value={form.username}
                 onChange={(e) => set("username", e.target.value)}
@@ -252,8 +252,8 @@ export function ProxyForm({ proxy, onSave, onDelete, onCancel }: ProxyFormProps)
               />
             </div>
             <div>
-              <label className="label">Password</label>
-              <input
+              <label className="label" htmlFor="pf-password-7">Password</label>
+              <input id="pf-password-7"
                 className="input"
                 type="password"
                 value={form.password}

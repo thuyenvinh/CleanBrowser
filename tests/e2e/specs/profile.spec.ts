@@ -68,7 +68,7 @@ test.describe("profiles", () => {
       .first()
       .click();
 
-    await expect(page.getByText(name)).toBeVisible();
+    await expect(page.getByText(name).first()).toBeVisible();
     await snap(page, "create-basic", "03-in-list");
   });
 
@@ -105,7 +105,7 @@ test.describe("profiles", () => {
       .first()
       .click();
 
-    await expect(page.getByText(name)).toBeVisible();
+    await expect(page.getByText(name).first()).toBeVisible();
     await snap(page, "create-full", "02-saved");
   });
 
@@ -125,7 +125,7 @@ test.describe("profiles", () => {
       .getByRole("button", { name: /save|create/i })
       .first()
       .click();
-    await expect(page.getByText(aName)).toBeVisible();
+    await expect(page.getByText(aName).first()).toBeVisible();
 
     // Create #2 with tag "bravo"
     await openNewProfile(page);
@@ -136,7 +136,7 @@ test.describe("profiles", () => {
       .getByRole("button", { name: /save|create/i })
       .first()
       .click();
-    await expect(page.getByText(bName)).toBeVisible();
+    await expect(page.getByText(bName).first()).toBeVisible();
     await snap(page, "filter-tag", "01-both-created");
 
     // Apply tag filter
@@ -151,7 +151,7 @@ test.describe("profiles", () => {
           await tagFilter.first().fill("alpha");
         });
       await snap(page, "filter-tag", "02-alpha-selected");
-      await expect(page.getByText(aName)).toBeVisible();
+      await expect(page.getByText(aName).first()).toBeVisible();
       await expect(page.getByText(bName)).toHaveCount(0);
     }
   });
@@ -184,7 +184,7 @@ test.describe("profiles", () => {
         .getByRole("button", { name: /save|create/i })
         .first()
         .click();
-      await expect(page.getByText(name)).toBeVisible();
+      await expect(page.getByText(name).first()).toBeVisible();
     };
 
     await createWithRegion(usName, "us");
@@ -202,7 +202,7 @@ test.describe("profiles", () => {
           await regionFilter.first().fill("us");
         });
       await snap(page, "filter-region", "02-us-selected");
-      await expect(page.getByText(usName)).toBeVisible();
+      await expect(page.getByText(usName).first()).toBeVisible();
       await expect(page.getByText(euName)).toHaveCount(0);
     }
   });
@@ -215,7 +215,7 @@ test.describe("profiles", () => {
     const original = `Original ${Date.now()}`;
     await openNewProfile(page);
     await fillNameAndSave(page, original);
-    await expect(page.getByText(original)).toBeVisible();
+    await expect(page.getByText(original).first()).toBeVisible();
     await snap(page, "rename", "01-created");
 
     await page.getByText(original).first().click();
@@ -231,7 +231,7 @@ test.describe("profiles", () => {
       .first()
       .click();
 
-    await expect(page.getByText(renamed)).toBeVisible();
+    await expect(page.getByText(renamed).first()).toBeVisible();
     await snap(page, "rename", "02-renamed");
   });
 
@@ -241,7 +241,7 @@ test.describe("profiles", () => {
     const dupName = `duplicate ${Date.now()}`;
     await openNewProfile(page);
     await fillNameAndSave(page, dupName);
-    await expect(page.getByText(dupName)).toBeVisible();
+    await expect(page.getByText(dupName).first()).toBeVisible();
     await snap(page, "dup-name", "01-first-created");
 
     await openNewProfile(page);
@@ -263,7 +263,7 @@ test.describe("profiles", () => {
     const name = `Deletable ${Date.now()}`;
     await openNewProfile(page);
     await fillNameAndSave(page, name);
-    await expect(page.getByText(name)).toBeVisible();
+    await expect(page.getByText(name).first()).toBeVisible();
     await snap(page, "delete-basic", "01-created");
 
     await page.getByText(name).first().click();
@@ -292,7 +292,7 @@ test.describe("profiles", () => {
     const name = `Versioned ${Date.now()}`;
     await openNewProfile(page);
     await fillNameAndSave(page, name);
-    await expect(page.getByText(name)).toBeVisible();
+    await expect(page.getByText(name).first()).toBeVisible();
 
     // Simulate edits to seed a version history. We edit-and-save twice.
     for (let i = 0; i < 2; i++) {
