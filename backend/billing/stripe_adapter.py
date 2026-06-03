@@ -53,6 +53,50 @@ def create_checkout_session(
     return {"url": s.url, "session_id": s.id}
 
 
+def create_one_time_checkout(
+    *,
+    customer_id: str,
+    amount_cents: int,
+    currency: str,
+    name: str,
+    success_url: str,
+    cancel_url: str,
+    metadata: dict[str, Any],
+) -> dict:
+    """One-off Stripe Checkout session (``mode='payment'``).
+
+    Used by the marketplace install endpoint to actually charge the buyer
+    before the app DSL is cloned + the creator earning is recorded
+    (bug C2: the previous flow tracked creator earnings without ever
+    collecting money from the buyer).
+
+    Inline ``price_data`` is used instead of a pre-registered ``price``
+    because marketplace apps mint a fresh checkout per install rather
+    than reusing a Stripe-side catalog — the app's ``price_cents`` lives
+    in our DB and may change between installs. Returns ``{url,
+    session_id}`` matching :func:`create_checkout_session`.
+    """
+    stripe = _client()
+    s = stripe.checkout.Session.create(
+        customer=customer_id,
+        mode="payment",
+        line_items=[
+            {
+                "price_data": {
+                    "currency": currency,
+                    "product_data": {"name": name},
+                    "unit_amount": amount_cents,
+                },
+                "quantity": 1,
+            }
+        ],
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata=metadata,
+    )
+    return {"url": s.url, "session_id": s.id}
+
+
 def create_portal_session(customer_id: str, return_url: str) -> str:
     stripe = _client()
     p = stripe.billing_portal.Session.create(customer=customer_id, return_url=return_url)

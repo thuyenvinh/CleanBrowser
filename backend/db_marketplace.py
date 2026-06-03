@@ -723,6 +723,89 @@ def list_apps_by_creator(user_id: str) -> list[dict[str, Any]]:
     return [_row_to_dict(r) for r in rows]  # type: ignore[misc]
 
 
+# ---------------------------------------------------------------------------
+# Pending installs — paid-app Stripe checkout deferral (bug C2 fix)
+# ---------------------------------------------------------------------------
+#
+# Surface for migration 0026. The install endpoint can't clone the DSL and
+# record the earning until the buyer's card is actually charged; we record
+# a pending row keyed by the Stripe checkout session id and let the
+# post-payment callback drive the real install. Rows are short-lived
+# (minutes between request and Stripe redirect) but kept for audit.
+
+
+def record_pending_install(
+    app_id: str,
+    workspace_id: str,
+    user_id: str,
+    stripe_session_id: str,
+) -> dict[str, Any] | None:
+    """Persist a paid-install intent before redirecting to Stripe.
+
+    Called by the install router immediately after creating the Stripe
+    Checkout session. The ``stripe_session_id`` is the lookup key the
+    redirect callback uses to resume the install (workspace + buyer +
+    app id), so it's stored ``UNIQUE`` at the column level.
+    """
+    inst_id = str(uuid.uuid4())
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO marketplace_pending_installs (
+                       id, app_id, workspace_id, user_id, stripe_session_id
+                   ) VALUES (%s, %s, %s, %s, %s)
+                   RETURNING *""",
+                (
+                    inst_id,
+                    app_id,
+                    workspace_id,
+                    user_id,
+                    stripe_session_id,
+                ),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_dict(row)
+
+
+def get_pending_install_by_session(
+    session_id: str,
+) -> dict[str, Any] | None:
+    """Resolve a pending install by its Stripe checkout session id.
+
+    Returns ``None`` for unknown ids (router maps to a friendly redirect
+    rather than 404 — the buyer landed here from Stripe, not a typed
+    URL). Hits ``ix_pending_installs_session`` for the lookup.
+    """
+    if not session_id:
+        return None
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM marketplace_pending_installs
+                   WHERE stripe_session_id = %s""",
+                (session_id,),
+            )
+            return _row_to_dict(cur.fetchone())
+
+
+def complete_pending_install(pending_id: str) -> None:
+    """Flip a pending row to ``status='completed'`` once the real install
+    has been performed. Idempotent — re-running the callback is a no-op
+    after the first pass (the router guards on ``status='pending'``
+    before reaching this call)."""
+    if not _safe_uuid(pending_id):
+        return
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE marketplace_pending_installs "
+                "SET status = 'completed' WHERE id = %s",
+                (pending_id,),
+            )
+        conn.commit()
+
+
 __all__ = [
     "list_public_apps",
     "get_app",
@@ -739,4 +822,7 @@ __all__ = [
     "creator_summary",
     "mark_earnings_available_due",
     "list_apps_by_creator",
+    "record_pending_install",
+    "get_pending_install_by_session",
+    "complete_pending_install",
 ]

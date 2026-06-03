@@ -27,7 +27,8 @@ from __future__ import annotations
 import logging
 from typing import Any
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi.responses import RedirectResponse
 
 from .. import db_auth, db_automation, db_marketplace
 from ..dependencies import (
@@ -96,45 +97,23 @@ def get_app(
 # ── Install / uninstall ──────────────────────────────────────────────────────
 
 
-@router.post("/apps/{app_id}/install")
-def install_app(
-    app_id: str,
-    body: dict[str, Any] | None = None,
-    user: dict[str, Any] = Depends(get_current_user),
+def _do_install(
+    app: dict[str, Any],
+    workspace_id: str,
+    user: dict[str, Any],
 ) -> dict[str, Any]:
-    """Clone an app into the caller's workspace and record the install.
+    """Clone the app DSL + record the install ledger + earning.
 
-    Body shape: ``{"workspace_id": "..."}``. ``workspace_id`` defaults to
-    the user's first workspace when missing — matches the convenience
-    fallback used by the automation endpoints.
+    Shared by the free-app fast path (``install_app``) and the paid-app
+    callback (``install_complete``). Kept module-private because both
+    callers have already done the auth + payment checks specific to
+    their flow — this helper trusts its inputs.
 
-    Cross-table choreography (kept in the router so the data layer stays
-    focused on its own tables):
-
-    1. Resolve and load the app (404 if missing or non-public).
-    2. Enforce editor+ on the target workspace.
-    3. Create a new ``automations`` row + first ``automation_versions``
-       row carrying the app's DSL / script payload.
-    4. Record the install ledger row (idempotent on
-       ``(workspace_id, app_id)``); a second install of the same app
-       therefore creates a *new* automation but reuses the install row.
-
-    Returns ``{install, automation, version}`` so the client can deep-link
-    straight to the freshly-cloned automation editor.
+    Returns ``{install, automation, version}`` so the free path can
+    return it directly and the callback path can log structured details.
     """
-    body = body or {}
-    app = db_marketplace.get_app(app_id)
-    if not app or not app.get("is_public"):
-        raise HTTPException(status_code=404, detail="App not found")
-
-    ws_id = body.get("workspace_id") or _first_workspace(user["id"])
-    check_role_for_workspace(user, ws_id, ROLE_LEVEL["editor"])
-
-    # Clone bundle into a fresh automation. Name comes from the app so
-    # the user can spot it in their automations list immediately; they
-    # can rename later via the automation CRUD endpoints.
     auto = db_automation.create_automation(
-        workspace_id=ws_id,
+        workspace_id=workspace_id,
         name=app["name"],
         kind=app["kind"],
         description=app.get("description"),
@@ -147,24 +126,16 @@ def install_app(
         script_code=app.get("script_code"),
         created_by_user_id=user["id"],
     )
-
     install = db_marketplace.install_app(
-        workspace_id=ws_id,
-        app_id=app_id,
+        workspace_id=workspace_id,
+        app_id=app["id"],
         user_id=user["id"],
         automation_id=auto["id"],
     )
 
-    # Paid apps: record the earning row so the creator dashboard can show
-    # the income immediately. The 14-day refund window keeps the row in
-    # ``pending`` until the daily worker promotes it to ``available``.
-    #
-    # TODO Phase 8: actual payment collection (Stripe PaymentIntent on the
-    # buyer's saved card) lives here once the Stripe integration lands.
-    # For now we only record the bookkeeping side — the install proceeds
-    # whether or not the buyer would actually be charged. This keeps the
-    # creator dashboard demoable end-to-end before the payment plumbing
-    # is wired up.
+    # Earning is recorded only after the install ledger row exists. For
+    # paid apps we additionally only reach this branch via the Stripe
+    # callback (i.e. the buyer was actually charged) — bug C2 fix.
     price_cents = int(app.get("price_cents") or 0)
     if price_cents > 0 and install is not None:
         try:
@@ -175,17 +146,194 @@ def install_app(
                 gross_cents=price_cents,
             )
         except Exception:
-            # Earning recording failures must not break the install
-            # endpoint — the install ledger row is already committed and
-            # the buyer's automation clone exists. Surface via logs so
-            # ops can reconcile manually.
+            # Earning failures must not break the install path: the
+            # buyer's payment has already cleared and the automation
+            # clone exists. Surface via logs so ops can reconcile.
             logger.exception(
                 "marketplace.record_earning failed app=%s install=%s",
-                app_id,
+                app["id"],
                 install.get("id"),
             )
 
     return {"install": install, "automation": auto, "version": version}
+
+
+@router.post("/apps/{app_id}/install")
+def install_app(
+    app_id: str,
+    body: dict[str, Any] | None = None,
+    user: dict[str, Any] = Depends(get_current_user),
+    request: Request = None,  # type: ignore[assignment]
+) -> dict[str, Any]:
+    """Clone an app into the caller's workspace (free) or kick off a
+    Stripe one-time checkout (paid).
+
+    Body shape: ``{"workspace_id": "..."}``. ``workspace_id`` defaults to
+    the user's first workspace when missing — matches the convenience
+    fallback used by the automation endpoints.
+
+    Free apps install synchronously (clone DSL + record install ledger)
+    and return ``{install, automation, version}``.
+
+    Paid apps (``price_cents > 0``) cannot install in this handler — bug
+    C2 was that the previous flow recorded a creator earning without
+    ever charging the buyer. We instead:
+
+    1. Create a Stripe Checkout session in ``mode='payment'`` priced at
+       ``price_cents``.
+    2. Persist a ``marketplace_pending_installs`` row keyed by the
+       checkout session id so :func:`install_complete` (the redirect
+       target) can resume.
+    3. Return ``{checkout_url, session_id, requires_payment: true}`` —
+       the frontend's existing "Install" button just navigates to
+       ``checkout_url`` and Stripe handles the card collection.
+
+    The actual DSL clone + earning recording happens in
+    :func:`install_complete` once Stripe confirms ``payment_status =
+    'paid'`` on the session.
+    """
+    body = body or {}
+    app = db_marketplace.get_app(app_id)
+    if not app or not app.get("is_public"):
+        raise HTTPException(status_code=404, detail="App not found")
+
+    ws_id = body.get("workspace_id") or _first_workspace(user["id"])
+    check_role_for_workspace(user, ws_id, ROLE_LEVEL["editor"])
+
+    price_cents = int(app.get("price_cents") or 0)
+
+    # Free app → install immediately.
+    if price_cents <= 0:
+        return _do_install(app, ws_id, user)
+
+    # Paid app → defer install behind Stripe checkout. Block the request
+    # cleanly if Stripe isn't wired up rather than silently falling back
+    # to the broken free-install path (that was the C2 bug).
+    from ..billing import stripe_adapter
+
+    if not stripe_adapter.is_configured():
+        raise HTTPException(
+            status_code=503,
+            detail="Payment not configured — cannot install paid app",
+        )
+
+    customer_id = stripe_adapter.create_or_get_customer(
+        tenant_id=user["tenant_id"],
+        email=user["email"],
+    )
+    base = str(request.base_url).rstrip("/") if request is not None else ""
+    # Stripe substitutes ``{CHECKOUT_SESSION_ID}`` into success_url so the
+    # callback can recover its context without trusting client state.
+    success_url = (
+        f"{base}/api/marketplace/install/complete"
+        "?session_id={CHECKOUT_SESSION_ID}"
+    )
+    cancel_url = f"{base}/?marketplace=cancelled"
+
+    session = stripe_adapter.create_one_time_checkout(
+        customer_id=customer_id,
+        amount_cents=price_cents,
+        currency="usd",
+        name=f"App: {app['name']}",
+        success_url=success_url,
+        cancel_url=cancel_url,
+        metadata={
+            "tenant_id": user["tenant_id"],
+            "workspace_id": ws_id,
+            "user_id": user["id"],
+            "app_id": app_id,
+            "type": "marketplace_install",
+        },
+    )
+
+    db_marketplace.record_pending_install(
+        app_id=app_id,
+        workspace_id=ws_id,
+        user_id=user["id"],
+        stripe_session_id=session["session_id"],
+    )
+
+    logger.info(
+        "marketplace.install.checkout app=%s user=%s ws=%s session=%s",
+        app_id,
+        user["id"],
+        ws_id,
+        session["session_id"],
+    )
+
+    return {
+        "checkout_url": session["url"],
+        "session_id": session["session_id"],
+        "requires_payment": True,
+    }
+
+
+@router.get("/install/complete")
+def install_complete(session_id: str):
+    """Stripe redirect target after a paid-install checkout completes.
+
+    Re-verifies ``payment_status == 'paid'`` against Stripe (so a
+    crafted redirect from a browser bookmark can't trigger a free
+    install) and then runs :func:`_do_install` with the buyer's
+    workspace + user resolved out of the pending row.
+
+    Returns a ``RedirectResponse`` rather than JSON because the buyer
+    lands here via Stripe's browser navigation, not via the frontend's
+    fetch layer. Status query strings let the SPA show the right toast:
+    ``installed`` / ``invalid`` / ``unpaid`` / ``verify_failed``.
+    """
+    pending = db_marketplace.get_pending_install_by_session(session_id)
+    if not pending or pending.get("status") != "pending":
+        return RedirectResponse("/?marketplace=invalid", status_code=302)
+
+    # Verify payment really cleared. Hitting Stripe (not just trusting
+    # the redirect) is the load-bearing check that closes C2.
+    try:
+        import os
+
+        import stripe
+
+        stripe.api_key = os.environ["STRIPE_SECRET_KEY"]
+        s = stripe.checkout.Session.retrieve(session_id)
+        if getattr(s, "payment_status", None) != "paid":
+            logger.warning(
+                "marketplace.install.complete unpaid session=%s status=%s",
+                session_id,
+                getattr(s, "payment_status", None),
+            )
+            return RedirectResponse(
+                "/?marketplace=unpaid", status_code=302
+            )
+    except Exception:
+        logger.exception(
+            "marketplace.install.complete verify failed session=%s",
+            session_id,
+        )
+        return RedirectResponse(
+            "/?marketplace=verify_failed", status_code=302
+        )
+
+    app = db_marketplace.get_app(pending["app_id"])
+    if app is None:
+        return RedirectResponse("/?marketplace=invalid", status_code=302)
+
+    # The callback has no session cookie (Stripe-initiated navigation),
+    # so we rehydrate the buyer dict from the pending row. ``_do_install``
+    # only reads ``id`` + ``tenant_id`` off it.
+    buyer = db_auth.get_user(pending["user_id"])
+    if buyer is None:
+        return RedirectResponse("/?marketplace=invalid", status_code=302)
+
+    _do_install(app, pending["workspace_id"], buyer)
+    db_marketplace.complete_pending_install(pending["id"])
+
+    logger.info(
+        "marketplace.install.complete ok app=%s user=%s ws=%s",
+        pending["app_id"],
+        pending["user_id"],
+        pending["workspace_id"],
+    )
+    return RedirectResponse("/?marketplace=installed", status_code=302)
 
 
 @router.delete("/installs/{install_id}")
