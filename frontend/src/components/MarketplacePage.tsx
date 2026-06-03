@@ -8,11 +8,13 @@ import {
   ExternalLink,
   Plus,
   Wallet,
+  ShieldCheck,
 } from "lucide-react";
 import { useMarketplace } from "../hooks/useMarketplace";
 import type { MarketplaceApp } from "../lib/marketplace";
 import { MarketplaceSubmitDialog } from "./MarketplaceSubmitDialog";
 import { MarketplaceCreatorDashboard } from "./MarketplaceCreatorDashboard";
+import { AdminModerationPage } from "./AdminModerationPage";
 
 interface MarketplacePageProps {
   currentWorkspaceId: string | null;
@@ -32,6 +34,11 @@ export function MarketplacePage({ currentWorkspaceId }: MarketplacePageProps) {
   } = useMarketplace(currentWorkspaceId);
   const [submitOpen, setSubmitOpen] = useState(false);
   const [dashboardOpen, setDashboardOpen] = useState(false);
+  // Moderation queue is shown unconditionally — the backend gates the route
+  // on bare auth in Phase 6 (no platform-admin role yet). Multi-tenant SaaS
+  // deploys should hide this button + add a super-admin gate before
+  // exposing the queue to non-operators.
+  const [moderationOpen, setModerationOpen] = useState(false);
 
   // Derive category chips from whatever the backend returned. Backend agent
   // PPP owns the canonical list; we only surface what actually exists so the
@@ -81,6 +88,13 @@ export function MarketplacePage({ currentWorkspaceId }: MarketplacePageProps) {
             </p>
           </div>
           <div className="flex items-center gap-2">
+            <button
+              onClick={() => setModerationOpen(true)}
+              className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-border text-gray-200 hover:bg-surface-2"
+            >
+              <ShieldCheck className="h-3.5 w-3.5" />
+              Moderation Queue
+            </button>
             <button
               onClick={() => setDashboardOpen(true)}
               className="inline-flex items-center gap-1.5 px-3 py-1.5 text-xs rounded border border-border text-gray-200 hover:bg-surface-2"
@@ -161,6 +175,10 @@ export function MarketplacePage({ currentWorkspaceId }: MarketplacePageProps) {
         <MarketplaceCreatorDashboard
           onClose={() => setDashboardOpen(false)}
         />
+      )}
+
+      {moderationOpen && (
+        <AdminModerationPage onClose={() => setModerationOpen(false)} />
       )}
     </div>
   );

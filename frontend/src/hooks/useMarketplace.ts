@@ -1,8 +1,10 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   marketplace,
+  marketplaceAdmin,
   type MarketplaceApp,
   type MarketplaceAppSubmit,
+  type PendingMarketplaceApp,
   type TenantAppInstall,
 } from "../lib/marketplace";
 
@@ -117,4 +119,69 @@ export function useMarketplace(currentWorkspaceId?: string | null) {
     uninstall,
     submit,
   };
+}
+
+/**
+ * Hook for the admin moderation queue.
+ *
+ * Mirrors :func:`useMarketplace` shape (loading/error/refresh) so the
+ * AdminModerationPage can render with the same skeleton patterns. Approve
+ * and reject auto-refresh — the queue is short enough (≤ pending +
+ * recently-rejected) that a full reload is cheaper than reconciling diffs.
+ *
+ * Phase 6 known limitation: backend gates these routes on bare auth, so any
+ * authenticated user sees the queue. Phase 7+ should introduce a
+ * platform-admin role and tighten the route + the link in MarketplacePage.
+ */
+export function useAdminPending() {
+  const [apps, setApps] = useState<PendingMarketplaceApp[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  const refresh = useCallback(async () => {
+    try {
+      setLoading(true);
+      const list = await marketplaceAdmin.listPending();
+      setApps(list);
+      setError(null);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to load moderation queue",
+      );
+    } finally {
+      setLoading(false);
+    }
+  }, []);
+
+  useEffect(() => {
+    refresh();
+  }, [refresh]);
+
+  const approve = useCallback(
+    async (id: string, notes?: string) => {
+      try {
+        await marketplaceAdmin.approve(id, notes);
+        await refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to approve app");
+        throw err;
+      }
+    },
+    [refresh],
+  );
+
+  const reject = useCallback(
+    async (id: string, notes: string) => {
+      try {
+        await marketplaceAdmin.reject(id, notes);
+        await refresh();
+      } catch (err) {
+        setError(err instanceof Error ? err.message : "Failed to reject app");
+        throw err;
+      }
+    },
+    [refresh],
+  );
+
+  return { apps, loading, error, refresh, approve, reject };
 }

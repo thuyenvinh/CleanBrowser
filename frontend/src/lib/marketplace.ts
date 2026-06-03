@@ -165,3 +165,45 @@ export const marketplaceCreator = {
     request<CreatorEarningsResponse>("/api/marketplace/creator/earnings"),
   apps: () => request<CreatorApp[]>("/api/marketplace/creator/apps"),
 };
+
+// ── Admin moderation (Phase 6 phase 4 — M5) ────────────────────────────────
+//
+// Surfaces the ``/admin/*`` routes in :mod:`backend.routers.marketplace`.
+// Phase 6 has no super-admin role, so the backend gates these on bare
+// auth — multi-tenant deploys need a real role gate added later.
+//
+// ``list_pending`` returns rows via ``SELECT *`` so the pending payload
+// includes the full ``dsl_json`` / ``script_code`` body that the public
+// listing strips out. We extend ``MarketplaceApp`` with the extra moderation
+// fields so the admin queue can render submitter metadata and preview the
+// payload without a second fetch.
+export interface PendingMarketplaceApp extends MarketplaceApp {
+  moderation_status: "pending" | "approved" | "rejected";
+  moderation_notes: string | null;
+  submitted_at: string | null;
+  submitted_by_user_id: string | null;
+  dsl_json: Record<string, unknown> | null;
+  script_language: string | null;
+  script_code: string | null;
+}
+
+export const marketplaceAdmin = {
+  listPending: () =>
+    request<PendingMarketplaceApp[]>("/api/marketplace/admin/pending"),
+  approve: (id: string, notes?: string) =>
+    request<PendingMarketplaceApp>(
+      `/api/marketplace/admin/apps/${id}/approve`,
+      {
+        method: "POST",
+        body: JSON.stringify({ notes: notes ?? null }),
+      },
+    ),
+  reject: (id: string, notes: string) =>
+    request<PendingMarketplaceApp>(
+      `/api/marketplace/admin/apps/${id}/reject`,
+      {
+        method: "POST",
+        body: JSON.stringify({ notes }),
+      },
+    ),
+};
