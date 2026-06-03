@@ -3,4 +3,6 @@ test-results/
 playwright-report/
 playwright/.cache/
 blob-report/
+screenshots/
+playwright-junit.xml
 *.log

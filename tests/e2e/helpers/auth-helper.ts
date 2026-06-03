@@ -102,3 +102,34 @@ export async function apiLogin(
   }
   return r.json();
 }
+
+// Export thêm các helper UI level cho specs mới
+export async function clickTab(
+  page: Page,
+  name:
+    | "profiles"
+    | "proxies"
+    | "automations"
+    | "marketplace"
+    | "billing"
+    | "security"
+    | "apikeys",
+): Promise<void> {
+  await page
+    .getByRole("button", { name: new RegExp(name, "i") })
+    .first()
+    .click();
+}
+
+export async function waitForAuthenticated(
+  page: Page,
+  timeoutMs = 10_000,
+): Promise<void> {
+  await page.waitForFunction(
+    () =>
+      !!document.querySelector("[data-testid=app-shell]") ||
+      !!document.querySelector('button[title*="Hide sidebar" i]'),
+    null,
+    { timeout: timeoutMs },
+  );
+}

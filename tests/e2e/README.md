@@ -52,3 +52,28 @@ frontend build is served by FastAPI on :8080.
   the signup *form* — saves ~2s of UI per test.
 - Selectors prefer accessible roles/labels (`getByRole`, `getByLabel`) over
   CSS — if a test breaks because of a copy change, update the regex.
+
+## Test artifacts
+
+When Playwright tests run, the following are auto-generated:
+- **`screenshots/`**: PNG screenshots taken at key steps + on failure
+- **`test-results/`**: Videos (.webm) of each test session + trace files
+- **`playwright-report/`**: Interactive HTML report — open with `npx playwright show-report`
+- **`playwright-junit.xml`**: JUnit XML for CI integration
+
+### View locally
+
+```bash
+cd tests/e2e
+npx playwright show-report
+```
+
+### View traces
+
+```bash
+npx playwright show-trace test-results/<test-name>/trace.zip
+```
+
+### CI artifacts
+
+GitHub Actions tự upload tất cả artifacts sau mỗi run — vào tab Actions → workflow run → Artifacts section.
