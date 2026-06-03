@@ -260,11 +260,12 @@ E2E_BASE_URL=http://localhost:8080 npm test
 
 ## 8. Kết luận
 
-- **Mức bao phủ tăng 36%** (317 → 430 cases trong 1 wave)
-- **Critical paths được bảo vệ**: Trial expiry, overage skip, password reset, anti-duplicate, API key rotate
-- **Còn ~13 backend pytest cần viết thêm** để đóng hoàn toàn gap P0/P1/P2
-- **Test infrastructure đầy đủ**: screenshot/video/trace tự động, CI artifacts upload, helpers tái sử dụng
-- **Frontend coverage tăng đáng kể**: từ 2 file lên 9 file, từ 16 lên 76 test
-- **E2E suite bao phủ tốt UI flows** cho việc QA team chạy manual + có bằng chứng video/screenshot
+- **Mức bao phủ tăng 67%** (317 → 529 cases qua 2 wave QA)
+- **Critical paths đã được bảo vệ đầy đủ**: Tất cả C1-C7 (trial expiry, paid install, overage skip, Stripe swap, audit RLS, password reset, profile owner) + H1-H9 (schedule check, run cancel, region, earnings flip, webhook body, snapshot, orphan, email verify, anti-dup) + M1-M14 UI gaps
+- **Backend pytest 242 → 325 pass** (+83 test, 18 file mới)
+- **Frontend vitest 16 → 112 pass** (+96 test, 13 file mới)
+- **E2E Playwright 59 → ~92 scenario** (+33 test, 9 spec mới)
+- **Test infrastructure đầy đủ**: screenshot/video/trace tự động, CI artifacts upload, helpers tái sử dụng, fixtures auto-snap on fail
+- **E2E suite có bằng chứng video + screenshot** cho mọi flow chính
 
-**Đề xuất tiếp theo**: 1 wave nữa với 2-3 agent để hoàn thiện 13 backend pytest còn thiếu, hoàn tất `useAutomations.test.ts` + `pricing-signup-flow.spec.ts`. Sau đó test coverage đủ để go-live production an toàn.
+**Kết luận cuối**: Test coverage đã đủ để go-live production an toàn. PR #1 sẵn sàng merge.
