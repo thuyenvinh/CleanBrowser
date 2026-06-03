@@ -196,3 +196,40 @@ export const oauth = {
   startUrl: (provider: OAuthProviderName) =>
     `/api/auth/oauth/${provider}/start`,
 };
+
+/**
+ * MFA (TOTP) enrolment client. Backed by the endpoints in
+ * ``backend/routers/auth.py`` under the "MFA" section:
+ *
+ *   POST /api/auth/mfa/setup    → { secret, qr_provisioning_uri }  (stateless)
+ *   POST /api/auth/mfa/enable   { secret, code }  → { enabled: true }
+ *   POST /api/auth/mfa/disable  { password, code } → { enabled: false }
+ *
+ * The setup secret is NOT yet persisted on the server — the client must
+ * echo it back to /enable together with a fresh TOTP code to confirm the
+ * authenticator app holds the same key. See the MFA comment block in the
+ * router for the full rationale.
+ */
+export interface MfaSetupResult {
+  secret: string;
+  qr_provisioning_uri: string;
+}
+
+export interface MfaToggleResult {
+  enabled: boolean;
+}
+
+export const mfa = {
+  setup: () =>
+    authRequest<MfaSetupResult>("/api/auth/mfa/setup", { method: "POST" }),
+  enable: (secret: string, code: string) =>
+    authRequest<MfaToggleResult>("/api/auth/mfa/enable", {
+      method: "POST",
+      body: JSON.stringify({ secret, code }),
+    }),
+  disable: (password: string, code: string) =>
+    authRequest<MfaToggleResult>("/api/auth/mfa/disable", {
+      method: "POST",
+      body: JSON.stringify({ password, code }),
+    }),
+};

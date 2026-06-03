@@ -1,5 +1,5 @@
 import { useState, useCallback, useEffect } from "react";
-import { Lock, PanelLeftClose, PanelLeft, Server, Globe, Workflow, CreditCard, Package, Key } from "lucide-react";
+import { Lock, PanelLeftClose, PanelLeft, Server, Globe, Workflow, CreditCard, Package, Shield } from "lucide-react";
 import { useProfiles } from "./hooks/useProfiles";
 import { useAuth } from "./hooks/useAuth";
 import { api, setOnUnauthorized, type ProfileCreateData } from "./lib/api";
@@ -383,10 +383,10 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
               <button
                 onClick={() => setTab("apikeys")}
                 className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "apikeys" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
-                title="API Keys"
+                title="Security (MFA + API keys)"
               >
-                <Key className="h-3.5 w-3.5" />
-                API Keys
+                <Shield className="h-3.5 w-3.5" />
+                Security
               </button>
             </div>
             {tab === "profiles" && selected && (

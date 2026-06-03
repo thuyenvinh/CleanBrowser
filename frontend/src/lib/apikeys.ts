@@ -52,4 +52,12 @@ export const apiKeys = {
     }),
   revoke: (id: string) =>
     request<void>(`/api/auth/api-keys/${id}`, { method: "DELETE" }),
+  // Rotate: server creates a new key with the same name + scopes and
+  // revokes the original atomically. The plaintext is returned ONCE on
+  // the response (same warning contract as create) — callers must show
+  // it to the user immediately and drop it from memory afterwards.
+  rotate: (id: string) =>
+    request<ApiKeyCreateResult>(`/api/auth/api-keys/${id}/rotate`, {
+      method: "POST",
+    }),
 };

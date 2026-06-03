@@ -770,6 +770,61 @@ async def revoke_api_key_route(
     return Response(status_code=status.HTTP_204_NO_CONTENT)
 
 
+@router.post("/api-keys/{key_id}/rotate", status_code=status.HTTP_201_CREATED)
+@limiter.limit("20/hour")
+async def rotate_api_key_route(
+    request: Request,
+    key_id: str,
+    user: dict[str, Any] = Depends(require_verified_email),
+):
+    """Rotate an API key: mint a fresh secret with the SAME name + scopes,
+    then revoke the original — atomic from the caller's POV.
+
+    Useful when a token may have leaked: a new key + new plaintext is issued
+    in the response (shown ONCE, same as create), and the original is marked
+    revoked so existing clients fail fast and force the operator to update
+    their stored secret. We deliberately reuse the existing
+    ``db_auth.create_api_key`` / ``db_auth.revoke_api_key`` primitives rather
+    than introducing a new ``rotate`` DB helper — keeps the data layer
+    untouched per the M11 brief.
+    """
+    keys = _list_api_keys_for_user(user["id"])
+    existing = next(
+        (k for k in keys if k["id"] == key_id and not k.get("revoked_at")),
+        None,
+    )
+    if not existing:
+        raise HTTPException(
+            status_code=404, detail="Key not found or already revoked"
+        )
+
+    try:
+        record, plaintext = db_auth.create_api_key(
+            user["id"],
+            name=existing["name"],
+            scopes=list(existing.get("scopes") or []),
+        )
+    except Exception:
+        logger.exception("rotate_api_key failed for user=%s", user["id"])
+        raise HTTPException(status_code=500, detail="failed to rotate api key")
+    db_auth.revoke_api_key(key_id)
+
+    return ApiKeyCreateResponse(
+        key=ApiKeyPublic(
+            id=record["id"],
+            name=record["name"],
+            scopes=list(record.get("scopes") or []),
+            last_used_at=record.get("last_used_at"),
+            created_at=record["created_at"],
+            revoked_at=record.get("revoked_at"),
+        ),
+        token=plaintext,
+        warning=(
+            "Save the new token now — old key has been revoked."
+        ),
+    )
+
+
 # ---------------------------------------------------------------------------
 # Password reset (bug C6 closure)
 #

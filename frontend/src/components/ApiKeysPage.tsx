@@ -1,7 +1,8 @@
 import { useState } from "react";
-import { Key, Plus, Trash2, Copy, AlertTriangle, X, Check } from "lucide-react";
+import { Key, Plus, Trash2, Copy, AlertTriangle, X, Check, RefreshCw, Shield } from "lucide-react";
 import { useApiKeys } from "../hooks/useApiKeys";
-import type { ApiKeyCreateResult } from "../lib/apikeys";
+import { apiKeys as apiKeysClient, type ApiKeyCreateResult } from "../lib/apikeys";
+import { MfaSetupPage } from "./MfaSetupPage";
 
 const AVAILABLE_SCOPES: { value: string; label: string; description: string }[] = [
   { value: "*", label: "Full access", description: "All API operations" },
@@ -202,9 +203,11 @@ function NewTokenBanner({
 }
 
 export function ApiKeysPage() {
-  const { keys, loading, error, create, revoke } = useApiKeys();
+  const { keys, loading, error, create, revoke, refresh } = useApiKeys();
   const [creating, setCreating] = useState(false);
   const [newKey, setNewKey] = useState<ApiKeyCreateResult | null>(null);
+  const [rotateError, setRotateError] = useState<string | null>(null);
+  const [rotatingId, setRotatingId] = useState<string | null>(null);
 
   const handleCreate = async (name: string, scopes: string[]) => {
     const result = await create(name, scopes);
@@ -219,6 +222,31 @@ export function ApiKeysPage() {
     await revoke(id);
   };
 
+  // Rotate flow (M11): mint a replacement with the same name + scopes and
+  // revoke the original. The server does this atomically; the UI shows the
+  // new plaintext via the same NewTokenBanner as create, then refreshes
+  // the list so the old row flips to "Revoked" and the new row appears.
+  const handleRotate = async (id: string, name: string) => {
+    if (
+      !window.confirm(
+        `Rotate API key "${name}"? A new token will be issued and "${name}" will be revoked — existing clients must switch to the new token immediately.`,
+      )
+    ) {
+      return;
+    }
+    setRotatingId(id);
+    setRotateError(null);
+    try {
+      const result = await apiKeysClient.rotate(id);
+      setNewKey(result);
+      await refresh();
+    } catch (e) {
+      setRotateError(e instanceof Error ? e.message : "Failed to rotate API key");
+    } finally {
+      setRotatingId(null);
+    }
+  };
+
   const exampleCurl = `curl -H "Authorization: Bearer YOUR_API_KEY" \\
   ${window.location.origin}/api/profiles`;
 
@@ -231,10 +259,10 @@ export function ApiKeysPage() {
       <div className="flex items-center justify-between">
         <div>
           <h2 className="text-lg font-semibold flex items-center gap-2">
-            <Key className="h-5 w-5 text-gray-400" /> API Keys
+            <Shield className="h-5 w-5 text-gray-400" /> Security
           </h2>
           <p className="text-xs text-gray-500 mt-1">
-            Personal access tokens for programmatic access (Playwright / Puppeteer scripts, CI/CD).
+            Manage two-factor authentication and personal API access tokens (Playwright / Puppeteer scripts, CI/CD).
           </p>
         </div>
         <button
@@ -252,6 +280,12 @@ export function ApiKeysPage() {
         </div>
       )}
 
+      {rotateError && (
+        <div className="bg-red-600/15 border border-red-600/30 text-red-400 px-3 py-2 rounded text-xs">
+          {rotateError}
+        </div>
+      )}
+
       {newKey && (
         <NewTokenBanner
           token={newKey.token}
@@ -260,6 +294,14 @@ export function ApiKeysPage() {
         />
       )}
 
+      {/* M1: MFA enrolment lives in the same "Security" tab so users have
+          a single place to manage credentials. */}
+      <MfaSetupPage />
+
+      <div>
+        <h3 className="text-sm font-semibold mb-2 flex items-center gap-2">
+          <Key className="h-4 w-4 text-gray-400" /> API keys
+        </h3>
       <section className="border border-border rounded-lg bg-surface-1 overflow-hidden">
         {keys.length === 0 ? (
           <div className="p-8 text-center">
@@ -311,13 +353,23 @@ export function ApiKeysPage() {
                     </td>
                     <td className="px-4 py-2 text-right">
                       {!revoked && (
-                        <button
-                          onClick={() => handleRevoke(k.id, k.name)}
-                          className="text-gray-500 hover:text-red-400 p-1"
-                          title="Revoke key"
-                        >
-                          <Trash2 className="h-3.5 w-3.5" />
-                        </button>
+                        <div className="flex items-center justify-end gap-1">
+                          <button
+                            onClick={() => handleRotate(k.id, k.name)}
+                            disabled={rotatingId === k.id}
+                            className="text-gray-500 hover:text-emerald-400 p-1 disabled:opacity-50"
+                            title="Rotate key (replace with a new token, revoke old)"
+                          >
+                            <RefreshCw className={`h-3.5 w-3.5 ${rotatingId === k.id ? "animate-spin" : ""}`} />
+                          </button>
+                          <button
+                            onClick={() => handleRevoke(k.id, k.name)}
+                            className="text-gray-500 hover:text-red-400 p-1"
+                            title="Revoke key"
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </button>
+                        </div>
                       )}
                     </td>
                   </tr>
@@ -327,6 +379,7 @@ export function ApiKeysPage() {
           </table>
         )}
       </section>
+      </div>
 
       <section>
         <h3 className="text-sm font-semibold mb-2">Example usage</h3>
