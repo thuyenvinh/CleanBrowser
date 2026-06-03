@@ -67,6 +67,21 @@ class LocalWorker:
         profile = db.get_profile(profile_id)
         if not profile:
             raise RuntimeError(f"profile {profile_id} not found")
+        # H3 — surface a region mismatch instead of silently running every
+        # profile on the single local worker. A profile that asked for
+        # ``us-east`` getting handed to a ``local``-region worker means
+        # geolocation / fingerprint assumptions baked in upstream may not
+        # hold. In single-node deployments this is the expected fallback so
+        # we only log; a future ``WorkerPool`` with multi-region workers
+        # registered would do the actual routing at the pool layer.
+        profile_region = profile.get("region") or self.region
+        if profile_region != self.region:
+            logger.warning(
+                "profile %s requests region %r but worker %s is region %r — "
+                "running on local worker as fallback (single-node mode); "
+                "register a region-matched worker to enable proper routing",
+                profile_id, profile_region, self.worker_id, self.region,
+            )
         # browser_manager.launch already handles session creation, port alloc, etc.
         await mgr.launch(profile)
         rp = mgr.running.get(profile_id)

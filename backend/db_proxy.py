@@ -32,10 +32,21 @@ import uuid
 from typing import Any
 from urllib.parse import quote
 
+import psycopg2
 import psycopg2.extras
 from cryptography.fernet import Fernet, InvalidToken
 
 from .database import get_db
+
+
+class DuplicateProxyName(ValueError):
+    """Raised when create_proxy / update_proxy would violate the
+    ``ux_proxies_workspace_name`` unique index (migration 0029).
+
+    Subclasses :class:`ValueError` so the existing ``except ValueError``
+    handler in ``routers/proxies.py`` surfaces it as 400 automatically. See
+    heuristic H9.
+    """
 
 logger = logging.getLogger("cloakbrowser.proxy")
 
@@ -211,35 +222,43 @@ def create_proxy(
     proxy_id = str(uuid.uuid4())
     password_enc = _encrypt(password)
 
-    with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                """INSERT INTO proxies (
-                    id, workspace_id, name, type, host, port,
-                    username, password_enc, provider, rotation_url,
-                    sticky_session, country_code
-                ) VALUES (
-                    %s, %s, %s, %s, %s, %s,
-                    %s, %s, %s, %s,
-                    %s, %s
-                ) RETURNING *""",
-                (
-                    proxy_id,
-                    workspace_id,
-                    name,
-                    type,
-                    host,
-                    port,
-                    username,
-                    password_enc,
-                    provider,
-                    rotation_url,
-                    sticky_session,
-                    country_code,
-                ),
-            )
-            row = cur.fetchone()
-        conn.commit()
+    try:
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    """INSERT INTO proxies (
+                        id, workspace_id, name, type, host, port,
+                        username, password_enc, provider, rotation_url,
+                        sticky_session, country_code
+                    ) VALUES (
+                        %s, %s, %s, %s, %s, %s,
+                        %s, %s, %s, %s,
+                        %s, %s
+                    ) RETURNING *""",
+                    (
+                        proxy_id,
+                        workspace_id,
+                        name,
+                        type,
+                        host,
+                        port,
+                        username,
+                        password_enc,
+                        provider,
+                        rotation_url,
+                        sticky_session,
+                        country_code,
+                    ),
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except psycopg2.errors.UniqueViolation as exc:
+        # H9 — workspace-scoped duplicate name guard (migration 0029).
+        if "ux_proxies_workspace_name" in str(exc):
+            raise DuplicateProxyName(
+                f"A proxy named {name!r} already exists in this workspace"
+            ) from exc
+        raise
     return _row_to_dict(row)  # type: ignore[return-value]
 
 
@@ -330,15 +349,24 @@ def update_proxy(proxy_id: str, **fields: Any) -> dict[str, Any] | None:
     update_cols.append("updated_at = now()")
     update_vals.append(proxy_id)
 
-    with get_db() as conn:
-        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
-            cur.execute(
-                f"UPDATE proxies SET {', '.join(update_cols)} "
-                f"WHERE id = %s RETURNING *",
-                update_vals,
-            )
-            row = cur.fetchone()
-        conn.commit()
+    try:
+        with get_db() as conn:
+            with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+                cur.execute(
+                    f"UPDATE proxies SET {', '.join(update_cols)} "
+                    f"WHERE id = %s RETURNING *",
+                    update_vals,
+                )
+                row = cur.fetchone()
+            conn.commit()
+    except psycopg2.errors.UniqueViolation as exc:
+        # H9 — same guard applies to rename via update.
+        if "ux_proxies_workspace_name" in str(exc):
+            raise DuplicateProxyName(
+                f"A proxy named {fields.get('name')!r} already exists "
+                "in this workspace"
+            ) from exc
+        raise
     return _row_to_dict(row)
 
 

@@ -167,6 +167,17 @@ def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+class DuplicateProfileName(ValueError):
+    """Raised when create_profile / update_profile would violate the
+    ``ux_profiles_workspace_name`` unique index (migration 0029).
+
+    Subclasses :class:`ValueError` so existing router-layer ``except
+    ValueError`` blocks (e.g. ``routers/proxies.py``) keep working without
+    a code change; routers that want a distinct 409 response can ``except
+    DuplicateProfileName`` first. See heuristic H9.
+    """
+
+
 def _row_to_profile(row: dict[str, Any]) -> dict[str, Any]:
     profile = dict(row)
     # launch_args is JSONB → psycopg2 returns a list/dict already; normalize.
@@ -224,49 +235,59 @@ def create_profile(
     # keeps getting the historical CloakBrowser-patched build.
     browser_type = fields.get("browser_type") or "chromium"
 
-    with get_db() as conn:
-        with conn.cursor() as cur:
-            cur.execute(
-                """INSERT INTO profiles (
-                    id, name, fingerprint_seed, proxy, timezone, locale, platform,
-                    user_agent, screen_width, screen_height, gpu_vendor, gpu_renderer,
-                    hardware_concurrency, humanize, human_preset, headless, geoip,
-                    clipboard_sync, auto_launch, color_scheme, launch_args, notes,
-                    user_data_dir, workspace_id, proxy_id, region, browser_type,
-                    created_by_user_id, created_at, updated_at
-                ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
-                (
-                    profile_id, name, seed,
-                    fields.get("proxy"),
-                    fields.get("timezone"),
-                    fields.get("locale"),
-                    fields.get("platform", "windows"),
-                    fields.get("user_agent"),
-                    fields.get("screen_width", 1920),
-                    fields.get("screen_height", 1080),
-                    fields.get("gpu_vendor"),
-                    fields.get("gpu_renderer"),
-                    fields.get("hardware_concurrency"),
-                    bool(fields.get("humanize", False)),
-                    fields.get("human_preset", "default"),
-                    bool(fields.get("headless", False)),
-                    bool(fields.get("geoip", False)),
-                    bool(fields.get("clipboard_sync", True)),
-                    bool(fields.get("auto_launch", False)),
-                    fields.get("color_scheme"),
-                    json.dumps(fields.get("launch_args") or []),
-                    fields.get("notes"),
-                    user_data_dir, workspace_id, proxy_id, region, browser_type,
-                    created_by_user_id, now, now,
-                ),
-            )
-            for t in tags:
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
                 cur.execute(
-                    "INSERT INTO profile_tags (profile_id, tag, color) VALUES (%s, %s, %s)",
-                    (profile_id, t["tag"], t.get("color")),
+                    """INSERT INTO profiles (
+                        id, name, fingerprint_seed, proxy, timezone, locale, platform,
+                        user_agent, screen_width, screen_height, gpu_vendor, gpu_renderer,
+                        hardware_concurrency, humanize, human_preset, headless, geoip,
+                        clipboard_sync, auto_launch, color_scheme, launch_args, notes,
+                        user_data_dir, workspace_id, proxy_id, region, browser_type,
+                        created_by_user_id, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                              %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        profile_id, name, seed,
+                        fields.get("proxy"),
+                        fields.get("timezone"),
+                        fields.get("locale"),
+                        fields.get("platform", "windows"),
+                        fields.get("user_agent"),
+                        fields.get("screen_width", 1920),
+                        fields.get("screen_height", 1080),
+                        fields.get("gpu_vendor"),
+                        fields.get("gpu_renderer"),
+                        fields.get("hardware_concurrency"),
+                        bool(fields.get("humanize", False)),
+                        fields.get("human_preset", "default"),
+                        bool(fields.get("headless", False)),
+                        bool(fields.get("geoip", False)),
+                        bool(fields.get("clipboard_sync", True)),
+                        bool(fields.get("auto_launch", False)),
+                        fields.get("color_scheme"),
+                        json.dumps(fields.get("launch_args") or []),
+                        fields.get("notes"),
+                        user_data_dir, workspace_id, proxy_id, region, browser_type,
+                        created_by_user_id, now, now,
+                    ),
                 )
-        conn.commit()
+                for t in tags:
+                    cur.execute(
+                        "INSERT INTO profile_tags (profile_id, tag, color) VALUES (%s, %s, %s)",
+                        (profile_id, t["tag"], t.get("color")),
+                    )
+            conn.commit()
+    except psycopg2.errors.UniqueViolation as exc:
+        # H9 — workspace-scoped duplicate name guard (migration 0029).
+        # We inspect the message rather than ``diag.constraint_name`` to stay
+        # robust against psycopg2 versions that don't surface it cleanly.
+        if "ux_profiles_workspace_name" in str(exc):
+            raise DuplicateProfileName(
+                f"A profile named {name!r} already exists in this workspace"
+            ) from exc
+        raise
 
     return get_profile(profile_id)  # type: ignore[return-value]
 
@@ -368,13 +389,22 @@ def update_profile(profile_id: str, **fields: Any) -> dict[str, Any] | None:
         update_cols.append("updated_at = %s")
         update_vals.append(_now())
         update_vals.append(profile_id)
-        with get_db() as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    f"UPDATE profiles SET {', '.join(update_cols)} WHERE id = %s",
-                    update_vals,
-                )
-            conn.commit()
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE profiles SET {', '.join(update_cols)} WHERE id = %s",
+                        update_vals,
+                    )
+                conn.commit()
+        except psycopg2.errors.UniqueViolation as exc:
+            # H9 — same guard applies to rename via update.
+            if "ux_profiles_workspace_name" in str(exc):
+                raise DuplicateProfileName(
+                    f"A profile named {fields.get('name')!r} already exists "
+                    "in this workspace"
+                ) from exc
+            raise
 
     if tags is not None:
         with get_db() as conn:
