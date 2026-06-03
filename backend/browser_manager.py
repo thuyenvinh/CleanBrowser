@@ -164,6 +164,10 @@ class BrowserManager:
         self._lock = asyncio.Lock()
         self._next_cdp_port = BASE_CDP_PORT
         self._auto_launch_task: asyncio.Task | None = None
+        # H6: track in-flight post-stop snapshots so cleanup_all can await
+        # them before the container exits — fire-and-forget would lose
+        # the latest version when a graceful shutdown races the upload.
+        self._pending_snapshots: set[asyncio.Task] = set()
 
     async def launch(self, profile: dict[str, Any]) -> RunningProfile:
         """Launch a browser instance for the given profile."""
@@ -407,6 +411,24 @@ class BrowserManager:
         except Exception:
             logger.exception("post-stop snapshot failed for %s", profile_id)
 
+    def _schedule_snapshot(
+        self, profile_id: str, session_id: str | None
+    ) -> asyncio.Task:
+        """Create + track a post-stop snapshot task.
+
+        H6: pre-fix this was effectively fire-and-forget — once the
+        coroutine left ``stop`` / ``_on_browser_closed`` the runtime
+        had no handle, so a container shutdown racing the upload would
+        silently drop the latest version. Now ``cleanup_all`` can await
+        ``self._pending_snapshots`` before exiting.
+        """
+        task = asyncio.create_task(
+            self._snapshot_after_stop(profile_id, session_id)
+        )
+        self._pending_snapshots.add(task)
+        task.add_done_callback(self._pending_snapshots.discard)
+        return task
+
     async def _on_browser_closed(self, profile_id: str):
         """Called when browser exits (crash, user closed via VNC, or stop())."""
         from . import database as db
@@ -417,10 +439,12 @@ class BrowserManager:
         if running:
             logger.info("Browser closed for profile %s, cleaning up", profile_id)
             await self.vnc.stop_vnc(running.display)
-            # Snapshot AFTER VNC teardown but BEFORE end_session so the
-            # snapshot's session_id link still resolves cleanly. Browser
-            # process is already dead at this point (close event fired).
-            await self._snapshot_after_stop(profile_id, running.session_id)
+            # Snapshot AFTER VNC teardown. Scheduled as a tracked task so
+            # cleanup_all (lifespan shutdown) can await pending uploads
+            # before the container exits (H6). end_session below only
+            # records the row; the snapshot keeps its captured
+            # session_id so the FK link still resolves cleanly.
+            self._schedule_snapshot(profile_id, running.session_id)
             if running.session_id:
                 # end_session is idempotent: if stop() already marked this as
                 # 'stopped', the WHERE ended_at IS NULL clause makes this a no-op.
@@ -453,9 +477,11 @@ class BrowserManager:
         await self.vnc.stop_vnc(running.display)
 
         # Snapshot user_data_dir to cloud storage now that Chromium has
-        # released its on-disk locks. Done before end_session so the
-        # snapshot row can still reference the still-active session_id.
-        await self._snapshot_after_stop(profile_id, running.session_id)
+        # released its on-disk locks. Scheduled as a tracked task (H6)
+        # so a graceful shutdown can await pending uploads in
+        # cleanup_all; session_id is captured up-front so end_session
+        # below cannot race the FK link.
+        self._schedule_snapshot(profile_id, running.session_id)
 
         if running.session_id:
             try:
@@ -486,6 +512,28 @@ class BrowserManager:
         for pid in profile_ids:
             await self.stop(pid)
 
+        # H6: stop() schedules the post-stop snapshot as a tracked task
+        # rather than awaiting it inline, so we must drain pending
+        # uploads before letting lifespan shutdown tear down the event
+        # loop. Without this drain a graceful container restart races
+        # the upload and silently drops the latest version. Bounded so
+        # a stuck upload can't keep the container alive indefinitely.
+        if self._pending_snapshots:
+            pending = list(self._pending_snapshots)
+            logger.info(
+                "waiting for %d pending snapshots before shutdown",
+                len(pending),
+            )
+            try:
+                await asyncio.wait_for(
+                    asyncio.gather(*pending, return_exceptions=True),
+                    timeout=30,
+                )
+            except asyncio.TimeoutError:
+                logger.warning(
+                    "snapshot wait timed out — may lose some versions"
+                )
+
         await self.vnc.cleanup_all()
 
     async def cleanup_stale(self):
@@ -499,12 +547,89 @@ class BrowserManager:
         from . import database as db
 
         await self.vnc.cleanup_stale()
+        # H7: a container restart wipes self.running but does NOT kill
+        # the Xvnc/Chromium child processes if shutdown was abrupt
+        # (SIGKILL, OOM, lost PID 1). Those orphans still hold display
+        # numbers, CDP ports, and SingletonLock files, so the next
+        # auto_launch_all collides on every resource. Sweep them
+        # before allocating anything new.
+        await self._kill_orphan_processes()
         try:
             stale = db.cleanup_stale_sessions()
             if stale:
                 logger.info("Marked %d stale session(s) as crashed", stale)
         except Exception as exc:
             logger.warning("cleanup_stale_sessions failed: %s", exc)
+
+    async def _kill_orphan_processes(self) -> None:
+        """Kill any Xvnc / KasmVNC / Chromium processes left over from a
+        previous container lifetime, and clear stale Chromium singleton
+        lock files that would otherwise abort the next launch.
+
+        H7: called from ``cleanup_stale`` at startup BEFORE we allocate
+        any displays or CDP ports. Best-effort — never raises. If
+        ``pkill`` isn't on PATH (minimal images) we skip the process
+        sweep but still scrub the lock files, which is the most common
+        cause of "browser exited immediately" after a crash-restart.
+        """
+        import shutil
+
+        killed = 0
+        if shutil.which("pkill"):
+            for pattern in ("Xvnc", "kasmvncserver", "chromium-browser", "chrome"):
+                try:
+                    proc = await asyncio.create_subprocess_exec(
+                        "pkill", "-f", pattern,
+                        stdout=asyncio.subprocess.DEVNULL,
+                        stderr=asyncio.subprocess.DEVNULL,
+                    )
+                    rc = await proc.wait()
+                    # pkill rc=0 means at least one process matched and
+                    # was signalled; rc=1 means nothing matched (the
+                    # happy path on a clean boot).
+                    if rc == 0:
+                        killed += 1
+                        logger.info(
+                            "killed orphan process matching %s", pattern
+                        )
+                except Exception:
+                    logger.exception(
+                        "orphan kill failed for %s", pattern
+                    )
+        else:
+            logger.warning(
+                "pkill not available — skipping orphan process sweep"
+            )
+
+        # Scrub Chromium SingletonLock siblings in every per-profile
+        # user_data_dir. Chromium refuses to launch if these point at a
+        # PID that is no longer ours (or worse, has been reused by an
+        # unrelated process post-restart). ``launch()`` already does
+        # this for the specific profile it's about to start, but at
+        # startup we don't yet know which profiles will be
+        # auto-launched, so sweep all of them up front.
+        try:
+            from . import database as db
+
+            data_dir = Path(getattr(db, "DATA_DIR", "/data")) / "profiles"
+            if data_dir.exists():
+                for child in data_dir.iterdir():
+                    if not child.is_dir():
+                        continue
+                    for lock in (
+                        "SingletonLock",
+                        "SingletonCookie",
+                        "SingletonSocket",
+                    ):
+                        for candidate in (child / lock, child / "Default" / lock):
+                            try:
+                                candidate.unlink(missing_ok=True)
+                            except Exception:
+                                pass
+        except Exception:
+            logger.exception("lock file cleanup failed")
+
+        logger.info("orphan cleanup: killed=%d", killed)
 
     async def auto_launch_all(self):
         """Launch all profiles with auto_launch=True. Called on startup."""
