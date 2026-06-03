@@ -30,7 +30,12 @@ from pydantic import ValidationError
 
 from .. import db_auth, email_sender
 from ..auth_tokens import JWT_LIFETIME_SECONDS, encode_session
-from ..dependencies import SESSION_COOKIE, _is_https, get_current_user
+from ..dependencies import (
+    SESSION_COOKIE,
+    _is_https,
+    get_current_user,
+    require_verified_email,
+)
 from ..rate_limit import limiter
 from ..models import (
     ApiKeyCreateRequest,
@@ -717,7 +722,7 @@ async def list_api_keys(user: dict[str, Any] = Depends(get_current_user)):
 async def create_api_key_route(
     request: Request,
     body: ApiKeyCreateRequest,
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(require_verified_email),
 ):
     """Mint a new API key. Plaintext token is shown ONCE in the response."""
     name = body.name.strip()

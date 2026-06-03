@@ -366,3 +366,35 @@ def require_quota(action: str) -> Callable[..., Any]:
         return result
 
     return _dep
+
+
+# ---------------------------------------------------------------------------
+# Email verification gate (H8).
+#
+# ``get_current_user`` only proves identity — it doesn't care whether the
+# email behind the session has been confirmed. That's deliberate: an
+# unverified user still needs to read /api/auth/me, resend the verification
+# email, and access read-only pages so they understand why their account is
+# limited. Sensitive *write* actions, on the other hand, must wait until
+# verification completes — otherwise a fresh signup can immediately spam
+# invites, mint API keys, or kick off a paid checkout before we've proven the
+# email even belongs to them. This dependency is the gate.
+# ---------------------------------------------------------------------------
+
+
+def require_verified_email(user: dict = Depends(get_current_user)) -> dict:
+    """Block action if user hasn't verified email.
+
+    Used on sensitive routes: workspace invite, API key creation, billing
+    checkout. Users still authenticate normally; they just can't perform
+    these actions until they click the link in their verification email.
+    """
+    if not user.get("email_verified_at"):
+        raise HTTPException(
+            status_code=403,
+            detail={
+                "error": "email_not_verified",
+                "message": "Please verify your email address before performing this action. Check your inbox or click 'Resend verification email' in the banner.",
+            },
+        )
+    return user

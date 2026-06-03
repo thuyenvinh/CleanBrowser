@@ -40,7 +40,7 @@ from fastapi import APIRouter, Depends, HTTPException, Response, status
 
 from .. import db_auth
 from .. import quota as _quota
-from ..dependencies import get_current_user
+from ..dependencies import get_current_user, require_verified_email
 from ..models import (
     InviteMemberRequest,
     UpdateMemberRoleRequest,
@@ -190,7 +190,7 @@ async def get_workspace_detail(
 async def invite_member(
     workspace_id: str,
     body: InviteMemberRequest,
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(require_verified_email),
 ) -> dict[str, Any]:
     """Invite an existing tenant user to ``workspace_id``.
 

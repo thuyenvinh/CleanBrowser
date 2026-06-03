@@ -8,7 +8,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.responses import RedirectResponse
 
 from ..billing import stripe_adapter, vnpay_adapter
-from ..dependencies import get_current_user
+from ..dependencies import get_current_user, require_verified_email
 
 logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/api/billing", tags=["billing"])
@@ -53,7 +53,7 @@ async def get_subscription(user: dict = Depends(get_current_user)):
 
 @router.post("/checkout")
 async def start_checkout(
-    body: dict, request: Request, user: dict = Depends(get_current_user)
+    body: dict, request: Request, user: dict = Depends(require_verified_email)
 ):
     """body: {plan_id, success_url?, cancel_url?}"""
     from .. import db_billing
@@ -176,7 +176,7 @@ async def stripe_webhook(
 
 @router.post("/vnpay/checkout")
 async def vnpay_checkout(
-    body: dict, request: Request, user: dict = Depends(get_current_user)
+    body: dict, request: Request, user: dict = Depends(require_verified_email)
 ):
     """body: {plan_id}. Creates VNPay payment URL for one-time payment."""
     from .. import db_billing
