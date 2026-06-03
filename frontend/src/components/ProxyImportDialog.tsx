@@ -35,13 +35,30 @@ function parseColonLine(line: string, idx: number): ParsedRow {
     return {
       row: null,
       raw: line,
-      error: `expected host:port[:user:pass], got ${parts.length} parts`,
+      error: `Expected host:port[:user:pass], got ${parts.length} parts`,
     };
   }
   const [host, portStr, username, password] = parts;
+  if (!host) {
+    return { row: null, raw: line, error: "Missing host" };
+  }
+  if (!portStr) {
+    return { row: null, raw: line, error: "Missing port" };
+  }
   const port = Number(portStr);
-  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
-    return { row: null, raw: line, error: "invalid host or port" };
+  if (!Number.isInteger(port)) {
+    return {
+      row: null,
+      raw: line,
+      error: `Invalid port "${portStr}" (not a number)`,
+    };
+  }
+  if (port < 1 || port > 65535) {
+    return {
+      row: null,
+      raw: line,
+      error: `Invalid port ${port} (must be 1-65535)`,
+    };
   }
   return {
     raw: line,
@@ -69,16 +86,41 @@ function parseCsvLine(
     obj[h] = cells[i] ?? "";
   });
   const host = obj.host;
+  if (!host) {
+    return { row: null, raw: line, error: "Missing host" };
+  }
+  if (!obj.port) {
+    return { row: null, raw: line, error: "Missing port" };
+  }
   const port = Number(obj.port);
-  if (!host || !Number.isInteger(port) || port < 1 || port > 65535) {
-    return { row: null, raw: line, error: "missing/invalid host or port" };
+  if (!Number.isInteger(port)) {
+    return {
+      row: null,
+      raw: line,
+      error: `Invalid port "${obj.port}" (not a number)`,
+    };
+  }
+  if (port < 1 || port > 65535) {
+    return {
+      row: null,
+      raw: line,
+      error: `Invalid port ${port} (must be 1-65535)`,
+    };
+  }
+  const type = (obj.type || "http").toLowerCase();
+  if (!["http", "https", "socks4", "socks5"].includes(type)) {
+    return {
+      row: null,
+      raw: line,
+      error: `Unsupported type "${obj.type}"`,
+    };
   }
   return {
     raw: line,
     error: null,
     row: {
       name: obj.name || `proxy-${idx + 1}`,
-      type: obj.type || "http",
+      type,
       host,
       port,
       username: obj.username || null,
@@ -133,6 +175,7 @@ export function ProxyImportDialog({ onClose, onImport }: ProxyImportDialogProps)
 
   const parsed = useMemo(() => parseInput(text, mode), [text, mode]);
   const validRows = parsed.rows.filter((r) => r.row != null);
+  const invalidCount = parsed.rows.length - validRows.length;
 
   const handleImport = async () => {
     if (validRows.length === 0) return;
@@ -203,6 +246,8 @@ export function ProxyImportDialog({ onClose, onImport }: ProxyImportDialogProps)
             <span className="text-red-400">
               {parsed.rows.length - validRows.length} invalid
             </span>
+            {" · "}
+            <span className="text-gray-400">{parsed.rows.length} total</span>
           </div>
 
           {parsed.rows.length > 0 && (
@@ -210,7 +255,7 @@ export function ProxyImportDialog({ onClose, onImport }: ProxyImportDialogProps)
               <table className="w-full text-xs">
                 <thead className="text-gray-500 sticky top-0 bg-surface-2">
                   <tr className="text-left">
-                    <th className="px-2 py-1.5">#</th>
+                    <th className="px-2 py-1.5">Line</th>
                     <th className="px-2 py-1.5">Name</th>
                     <th className="px-2 py-1.5">Host:Port</th>
                     <th className="px-2 py-1.5">User</th>
@@ -218,32 +263,54 @@ export function ProxyImportDialog({ onClose, onImport }: ProxyImportDialogProps)
                   </tr>
                 </thead>
                 <tbody>
-                  {parsed.rows.map((r, i) => (
-                    <tr key={i} className="border-t border-border/50">
-                      <td className="px-2 py-1 text-gray-500">{i + 1}</td>
-                      <td className="px-2 py-1">{r.row?.name ?? "-"}</td>
-                      <td className="px-2 py-1 font-mono">
-                        {r.row ? `${r.row.host}:${r.row.port}` : "-"}
-                      </td>
-                      <td className="px-2 py-1 text-gray-400">
-                        {r.row?.username ?? "-"}
-                      </td>
-                      <td className="px-2 py-1">
-                        {r.error ? (
-                          <span
-                            className="text-red-400 text-[10px]"
-                            title={r.error}
-                          >
-                            {r.error}
-                          </span>
-                        ) : (
-                          <span className="text-emerald-400 text-[10px]">
-                            ok
-                          </span>
-                        )}
-                      </td>
-                    </tr>
-                  ))}
+                  {parsed.rows.map((r, i) => {
+                    // M13: highlight invalid rows in red and surface the
+                    // raw line + specific reason inline so users can spot
+                    // and fix issues without scrolling between input and
+                    // table. For CSV mode line numbers offset by +1 to
+                    // account for the header row.
+                    const lineNo =
+                      parsed.mode === "csv" ? i + 2 : i + 1;
+                    return (
+                      <tr
+                        key={i}
+                        className={`border-t border-border/50 ${
+                          r.error ? "bg-red-600/10" : ""
+                        }`}
+                      >
+                        <td className="px-2 py-1 text-gray-500">{lineNo}</td>
+                        <td className="px-2 py-1">{r.row?.name ?? "-"}</td>
+                        <td className="px-2 py-1 font-mono">
+                          {r.row ? `${r.row.host}:${r.row.port}` : (
+                            <span
+                              className="text-gray-500 italic"
+                              title={r.raw}
+                            >
+                              {r.raw.length > 30
+                                ? r.raw.slice(0, 30) + "…"
+                                : r.raw || "(empty)"}
+                            </span>
+                          )}
+                        </td>
+                        <td className="px-2 py-1 text-gray-400">
+                          {r.row?.username ?? "-"}
+                        </td>
+                        <td className="px-2 py-1">
+                          {r.error ? (
+                            <span className="text-red-400 text-[10px] flex items-center gap-1">
+                              <span aria-hidden>✗</span>
+                              <span title={r.error}>{r.error}</span>
+                            </span>
+                          ) : (
+                            <span className="text-emerald-400 text-[10px] flex items-center gap-1">
+                              <span aria-hidden>✓</span>
+                              <span>valid</span>
+                            </span>
+                          )}
+                        </td>
+                      </tr>
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -281,9 +348,16 @@ export function ProxyImportDialog({ onClose, onImport }: ProxyImportDialogProps)
             onClick={handleImport}
             disabled={importing || validRows.length === 0 || !!summary}
             className="btn-primary text-xs flex items-center gap-1.5"
+            title={
+              invalidCount > 0
+                ? `Skip ${invalidCount} invalid line${invalidCount === 1 ? "" : "s"} and import the rest`
+                : undefined
+            }
           >
             {importing && <Loader2 className="h-3 w-3 animate-spin" />}
-            Import {validRows.length} {validRows.length === 1 ? "proxy" : "proxies"}
+            {invalidCount > 0 && validRows.length > 0
+              ? `Skip invalid & import ${validRows.length}`
+              : `Import ${validRows.length} ${validRows.length === 1 ? "proxy" : "proxies"}`}
           </button>
         </div>
       </div>
