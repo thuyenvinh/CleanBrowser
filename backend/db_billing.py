@@ -826,6 +826,21 @@ def get_subscription_overage_item(subscription_id: str) -> str | None:
             return row[0] if row else None
 
 
+def expire_due_trials() -> int:
+    """Flip trialing subs to past_due if trial_end has passed.
+    Returns count of rows updated.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE subscriptions SET status = 'past_due', updated_at = now() "
+                "WHERE status = 'trialing' AND trial_end < now() RETURNING id"
+            )
+            rows = cur.fetchall()
+        conn.commit()
+        return len(rows)
+
+
 __all__ = [
     "ACTIVE_SUBSCRIPTION_STATUSES",
     "VALID_INVOICE_STATUSES",
@@ -835,6 +850,7 @@ __all__ = [
     "cancel_subscription",
     "create_invoice",
     "create_subscription",
+    "expire_due_trials",
     "get_active_subscription",
     "get_or_create_current_period",
     "get_plan",

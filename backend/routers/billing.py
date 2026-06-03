@@ -154,6 +154,11 @@ async def stripe_webhook(
         if existing:
             db_billing.update_subscription(existing["id"], **fields)
         else:
+            existing_trial = db_billing.get_active_subscription(tenant_id)
+            if existing_trial and existing_trial.get("status") == "trialing" and existing_trial.get("provider_subscription_id") != result["subscription_id"]:
+                # Cancel trial immediately to make room for the new Stripe sub
+                db_billing.cancel_subscription(existing_trial["id"], immediate=True)
+                logger.info("auto-cancelled trial sub %s to make room for Stripe sub %s", existing_trial["id"], result["subscription_id"])
             db_billing.create_subscription(
                 tenant_id=tenant_id,
                 payment_provider="stripe",

@@ -29,6 +29,7 @@ from . import overage_worker
 from . import proxy_health
 from . import status_worker
 from . import idle_reaper
+from . import trial_expiry_worker
 from .dependencies import (
     FRONTEND_DIR,
     _AUTH_EXEMPT,
@@ -153,12 +154,14 @@ async def lifespan(app: FastAPI):
     await automation_scheduler.start()
     await idle_reaper.start()
     await overage_worker.start()
+    await trial_expiry_worker.start()
     logger.info("CloakBrowser Manager started")
     yield
     logger.info("Shutting down — stopping all browsers...")
     if browser_mgr._auto_launch_task and not browser_mgr._auto_launch_task.done():
         browser_mgr._auto_launch_task.cancel()
         await asyncio.gather(browser_mgr._auto_launch_task, return_exceptions=True)
+    await trial_expiry_worker.stop()
     await overage_worker.stop()
     await idle_reaper.stop()
     await automation_scheduler.stop()
