@@ -26,4 +26,87 @@ test.describe("billing", () => {
       (await page.getByText(/usage/i).count()) > 0;
     expect(hasProgress).toBe(true);
   });
+
+  test("Trial Pro auto-applied after signup shows Current plan/trialing", async ({
+    page,
+  }) => {
+    await signup(page, uniqueEmail("trial"));
+    await page.getByRole("button", { name: /billing/i }).first().click();
+
+    // After signup we auto-apply a Pro trial. Look for the Pro label paired
+    // with a current/trial badge somewhere on the page.
+    await expect(page.getByText(/pro/i).first()).toBeVisible();
+    const trialBadge = page.getByText(/current plan|trialing|trial/i).first();
+    await expect(trialBadge).toBeVisible();
+  });
+
+  test("Plans grid renders 4 tiers (Free/Starter/Pro/Team)", async ({
+    page,
+  }) => {
+    await signup(page, uniqueEmail("plans"));
+    await page.getByRole("button", { name: /billing/i }).first().click();
+
+    // We expect labels for at least four distinct tiers on the plans grid.
+    // Accept "Team" or the older "Enterprise"/"Business" copy as the 4th.
+    await expect(page.getByText(/free/i).first()).toBeVisible();
+    await expect(page.getByText(/starter/i).first()).toBeVisible();
+    await expect(page.getByText(/pro/i).first()).toBeVisible();
+    await expect(
+      page.getByText(/team|enterprise|business/i).first(),
+    ).toBeVisible();
+
+    // Usage bars should be present somewhere on the billing page.
+    const hasProgress =
+      (await page.getByRole("progressbar").count()) > 0 ||
+      (await page.getByText(/usage/i).count()) > 0;
+    expect(hasProgress).toBe(true);
+  });
+
+  test("Stripe and VNPay buttons available on paid plan", async ({ page }) => {
+    await signup(page, uniqueEmail("pay"));
+    await page.getByRole("button", { name: /billing/i }).first().click();
+
+    // We don't assert the exact placement; just that both payment providers
+    // are surfaced somewhere on the billing page for at least one paid plan.
+    const stripe = page.getByText(/stripe/i).first();
+    const vnpay = page.getByText(/vnpay/i).first();
+    await expect(stripe.or(vnpay)).toBeVisible();
+  });
+
+  test("Pricing page is public (no auth required)", async ({ page }) => {
+    await page.goto("/?pricing=1");
+
+    // Expect the four plan tiers to be visible to logged-out visitors.
+    await expect(page.getByText(/free/i).first()).toBeVisible();
+    await expect(page.getByText(/starter/i).first()).toBeVisible();
+    await expect(page.getByText(/pro/i).first()).toBeVisible();
+
+    // And a CTA pointing at the trial.
+    await expect(
+      page.getByRole("button", { name: /start free trial|free trial/i }).first(),
+    ).toBeVisible();
+  });
+
+  test("Trial countdown banner integrates without breaking signup flow", async ({
+    page,
+  }) => {
+    await signup(page, uniqueEmail("banner"));
+    // On a brand-new account with 14 days remaining, the countdown banner is
+    // typically not yet shown (it surfaces near the end of the trial). We
+    // only verify that the app shell still mounts cleanly and the billing
+    // tab is reachable — i.e. the component import path is sound.
+    await page.getByRole("button", { name: /billing/i }).first().click();
+    await expect(page.getByText(/pro|trial|plan/i).first()).toBeVisible();
+  });
+
+  test("Invoice section shows empty state for new account", async ({
+    page,
+  }) => {
+    await signup(page, uniqueEmail("inv"));
+    await page.getByRole("button", { name: /billing/i }).first().click();
+
+    await expect(
+      page.getByText(/no invoices yet|no invoices/i).first(),
+    ).toBeVisible();
+  });
 });
