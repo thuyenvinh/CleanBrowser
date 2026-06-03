@@ -37,6 +37,7 @@ from starlette.requests import Request
 from starlette.responses import Response
 
 from . import audit_clickhouse, db_audit
+from .middleware_rls import system_context
 
 logger = logging.getLogger(__name__)
 
@@ -219,20 +220,31 @@ class AuditMiddleware(BaseHTTPMiddleware):
             "status_code": response.status_code,
         }
 
-        # Fire-and-forget — ``db_audit.write`` is documented as never raising.
-        db_audit.write(
-            action=action,
-            tenant_id=tenant_id,
-            actor_user_id=actor_user_id,
-            ip=ip,
-            user_agent=user_agent,
-            status="success",
-            payload=payload,
-        )
+        # Fire-and-forget — ``db_audit.write`` is documented as never
+        # raising. Wrap in :func:`system_context` (C5) so the
+        # ``audit_logs`` INSERT bypasses migration 0012's restrictive
+        # RLS policy: the middleware may run with no tenant pinned
+        # (unauthenticated signup/login) or a tenant whose policy
+        # forbids self-writes to audit_logs, and in either case the
+        # row would be silently rejected without the bypass.
+        try:
+            with system_context():
+                db_audit.write(
+                    action=action,
+                    tenant_id=tenant_id,
+                    actor_user_id=actor_user_id,
+                    ip=ip,
+                    user_agent=user_agent,
+                    status="success",
+                    payload=payload,
+                )
+        except Exception:
+            logger.exception("audit write failed")
 
         # Dual-write to ClickHouse for analytics + long retention. Silent
         # no-op when CLICKHOUSE_URL is not configured. Errors must never
-        # break the request flow.
+        # break the request flow. (ClickHouse has no RLS so the
+        # system_context wrap is Postgres-only.)
         try:
             if audit_clickhouse.is_configured():
                 audit_clickhouse.write(

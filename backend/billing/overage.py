@@ -39,14 +39,21 @@ def is_stripe_metered_available() -> bool:
 def emit_overage(
     tenant_id: str,
     resource: str,
-    units: int,
+    delta: int,
     plan: dict[str, Any] | None = None,
     subscription: dict[str, Any] | None = None,
 ) -> dict[str, Any] | None:
     """Record one local overage event.
 
-    Returns the persisted event dict, or ``None`` if the plan disallows
-    overage / ``units`` is non-positive / the plan is missing.
+    Returns the persisted event dict, or ``None`` if the tenant has no
+    *active* subscription / the plan disallows overage / ``delta`` is
+    non-positive / the plan is missing.
+
+    Subscription gate (C3): only subscriptions in the ``active`` status
+    are charged. Trialing / past_due / cancelled subs (and tenants with
+    no subscription row at all) must never reach Stripe — billing them
+    overage during a trial would be a contract violation, and dunning
+    states deserve human intervention before piling more charges on.
 
     Stripe relay is intentionally *not* done synchronously here — the
     request path stays on the fast path and the periodic
@@ -54,9 +61,40 @@ def emit_overage(
     ``OVERAGE_FLUSH_INTERVAL_SECONDS``. That keeps Stripe latency /
     outages out of the user-visible action.
     """
-    if not plan or not plan.get("allow_overage"):
+    if delta <= 0:
         return None
-    if units <= 0:
+
+    from .. import db_billing  # local import to avoid circular at module load
+
+    # C3 gate: re-fetch the subscription rather than trusting the caller's
+    # snapshot — :func:`backend.quota.record_usage` passes the active
+    # subscription it already loaded, but other callers (tests, future
+    # workers) may not, and the authoritative status check belongs here.
+    if subscription is None:
+        subscription = db_billing.get_active_subscription(tenant_id)
+
+    if not subscription:
+        logger.debug("no active sub for tenant %s — skip overage", tenant_id)
+        return None
+
+    status = subscription.get("status")
+    if status != "active":
+        # Trialing / past_due / cancelled / incomplete: keep the action
+        # free for the user but do NOT record a billable event. The
+        # daily reconciler has nothing to drain because there's no row.
+        logger.info(
+            "skip overage for tenant %s — sub status=%s", tenant_id, status
+        )
+        return None
+
+    # Plan may be omitted by callers that only have the subscription;
+    # fall back to ``db_billing.get_plan`` so the overage gate is
+    # self-contained.
+    if plan is None:
+        plan_id = subscription.get("plan_id")
+        plan = db_billing.get_plan(plan_id) if plan_id else None
+
+    if not plan or not plan.get("allow_overage"):
         return None
 
     # Snapshot the unit price *at event time* so re-pricing the plan
@@ -67,13 +105,11 @@ def emit_overage(
         else None
     )
 
-    from .. import db_billing  # local import to avoid circular at module load
-
     return db_billing.record_overage_event(
         tenant_id=tenant_id,
-        subscription_id=subscription["id"] if subscription else None,
+        subscription_id=subscription.get("id"),
         resource=resource,
-        units=units,
+        units=delta,
         unit_price_cents=unit_price,
         stripe_usage_record_id=None,
     )
