@@ -196,6 +196,12 @@ def _row_to_profile(row: dict[str, Any]) -> dict[str, Any]:
     # ``workspace_id`` normalisation so downstream serialisers see a str.
     if isinstance(profile.get("proxy_id"), uuid.UUID):
         profile["proxy_id"] = str(profile["proxy_id"])
+    # created_by_user_id (added in migration 0028) records the session user
+    # who created the profile so the route layer can enforce the C7 fix
+    # ("only creator or admin+ can delete"). Stringify for the same reason
+    # as the other UUID columns above.
+    if isinstance(profile.get("created_by_user_id"), uuid.UUID):
+        profile["created_by_user_id"] = str(profile["created_by_user_id"])
     return profile
 
 
@@ -205,6 +211,7 @@ def create_profile(
     workspace_id: str | None = None,
     proxy_id: str | None = None,
     region: str | None = None,
+    created_by_user_id: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
     profile_id = str(uuid.uuid4())
@@ -226,9 +233,9 @@ def create_profile(
                     hardware_concurrency, humanize, human_preset, headless, geoip,
                     clipboard_sync, auto_launch, color_scheme, launch_args, notes,
                     user_data_dir, workspace_id, proxy_id, region, browser_type,
-                    created_at, updated_at
+                    created_by_user_id, created_at, updated_at
                 ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
-                          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                          %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
                 (
                     profile_id, name, seed,
                     fields.get("proxy"),
@@ -251,7 +258,7 @@ def create_profile(
                     json.dumps(fields.get("launch_args") or []),
                     fields.get("notes"),
                     user_data_dir, workspace_id, proxy_id, region, browser_type,
-                    now, now,
+                    created_by_user_id, now, now,
                 ),
             )
             for t in tags:

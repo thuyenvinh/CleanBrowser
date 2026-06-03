@@ -113,6 +113,11 @@ class ProfileResponse(BaseModel):
     status: str = "stopped"  # "running" | "stopped"
     vnc_ws_port: int | None = None
     cdp_url: str | None = None
+    # Phase 1 RBAC C7 fix — id of the user who created this profile, or
+    # ``None`` for pre-fix / legacy / unauthenticated-created rows. Surfaced
+    # so the SPA can label profiles and so the route layer can enforce the
+    # "only creator or admin+ can delete" rule (see migration 0028).
+    created_by_user_id: str | None = None
 
 
 class LaunchResponse(BaseModel):
@@ -564,6 +569,40 @@ class ResendVerificationResponse(BaseModel):
 
     sent: bool | None = None
     already_verified: bool | None = None
+
+
+# ---------------------------------------------------------------------------
+# Password reset (Phase 7 — bug C6 closure)
+#
+# Two-step flow that mirrors email verification: the user requests a reset
+# by email, the server mints a token + emails a link, and a follow-up POST
+# consumes the token + sets the new password. See ``routers/auth.py`` for
+# the endpoints and ``db_auth.create_password_reset_token`` for the
+# token-table contract.
+# ---------------------------------------------------------------------------
+
+
+class ForgotPasswordRequest(BaseModel):
+    """Body of ``POST /api/auth/forgot-password``.
+
+    Only the email is needed — the server intentionally returns the same
+    200 response whether or not the address maps to a real user, so an
+    attacker cannot use this endpoint to enumerate accounts.
+    """
+
+    email: EmailStr
+
+
+class ResetPasswordRequest(BaseModel):
+    """Body of ``POST /api/auth/reset-password``.
+
+    ``token`` is the URL-safe plaintext from the reset email; ``new_password``
+    is the user's chosen replacement. Min length matches :class:`SignupRequest`
+    so the floor doesn't change between signup and reset.
+    """
+
+    token: str
+    new_password: str = Field(min_length=8)
 
 
 # ---------------------------------------------------------------------------

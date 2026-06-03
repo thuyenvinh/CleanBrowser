@@ -29,6 +29,7 @@ from .. import db_auth
 from .. import db_proxy
 from .. import db_versions
 from .. import quota as _quota
+from .. import dependencies as deps
 from ..dependencies import (
     ROLE_LEVEL,
     browser_mgr,
@@ -139,6 +140,53 @@ def _load_and_check(
     return profile
 
 
+def _check_mutation_permission(
+    profile: dict[str, Any], user: dict[str, Any] | None
+) -> None:
+    """Enforce the C7 fix: only the creator or an admin+ may delete a profile.
+
+    Editor-tier members in the workspace pass the role check in
+    :func:`_load_and_check`, but the bug here is that an editor must not be
+    able to delete a profile they didn't create — that's a destructive
+    cross-member action. This helper layers on top of the role check:
+
+    * ``user is None``  → legacy / unauthenticated bypass (matches the rest
+      of this router's layering — tests + AUTH_TOKEN-only callers still work).
+    * profile's ``created_by_user_id == user["id"]`` → the user owns the row,
+      allow.
+    * Otherwise re-check the user's role in the profile's workspace and
+      require admin+ — editors can still *edit* a peer's profile via PUT,
+      but DELETE is gated to admin+ or the creator.
+
+    The ``workspace_id`` is expected to already be set on the profile by the
+    time this is called (``_load_and_check`` rejects orphans first); we
+    re-validate defensively so a caller that wires the helper in elsewhere
+    can't accidentally bypass scoping.
+    """
+    if user is None:
+        return
+    creator_id = profile.get("created_by_user_id")
+    if creator_id and creator_id == user["id"]:
+        return
+    ws_id = profile.get("workspace_id")
+    if not ws_id:
+        # Same 404-on-orphan stance as the rest of this router — don't leak
+        # whether the row exists by returning 403 here.
+        raise HTTPException(status_code=404, detail="Profile not found")
+    role = db_auth.get_member_role(ws_id, user["id"])
+    if not role:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    level = deps.ROLE_LEVEL.get(role, 0)
+    if level < deps.ROLE_LEVEL["admin"]:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "Only the creator or an admin+ can perform this action. "
+                "Profile creator is a different user."
+            ),
+        )
+
+
 def _validate_proxy_id_for_workspace(
     proxy_id: str | None,
     workspace_id: str | None,
@@ -221,6 +269,11 @@ async def create_profile(
         # Require editor+ in the target workspace to create profiles.
         check_role_for_workspace(user, target_ws, ROLE_LEVEL["editor"])
         data["workspace_id"] = target_ws
+        # Stamp the creator so the C7 "only creator or admin+ can delete"
+        # check in :func:`_check_mutation_permission` has someone to compare
+        # against. Legacy / unauthenticated callers leave this NULL so the
+        # column tolerates the test suite hitting the API without a session.
+        data["created_by_user_id"] = user["id"]
         # Quota gate: 402 before any DB write if the plan limit is hit.
         _quota.check_quota(user["tenant_id"], "create_profile").raise_if_exceeded()
     # else: leave workspace_id unset → create_profile defaults to NULL.
@@ -289,6 +342,10 @@ async def delete_profile(
         await browser_mgr.stop(profile_id)
 
     profile = _load_and_check(profile_id, user, ROLE_LEVEL["editor"])
+
+    # C7 fix: editors can edit a peer's profile but must NOT be able to
+    # delete it — only the creator or an admin+ in the workspace can.
+    _check_mutation_permission(profile, user)
 
     user_data_dir = Path(profile["user_data_dir"])
 
