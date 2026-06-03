@@ -45,5 +45,14 @@ export function useBilling() {
     }
   }, []);
 
-  return { status, plans, invoices, loading, error, refresh, upgrade, managePortal };
+  const payVnpay = useCallback(async (planId: string) => {
+    try {
+      const {url} = await billing.startVnpayCheckout(planId);
+      window.location.href = url;
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "VNPay failed");
+    }
+  }, []);
+
+  return { status, plans, invoices, loading, error, refresh, upgrade, managePortal, payVnpay };
 }

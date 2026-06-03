@@ -19,6 +19,7 @@ import { AutomationPage } from "./components/AutomationPage";
 import { BillingPage } from "./components/BillingPage";
 import { MarketplacePage } from "./components/MarketplacePage";
 import { EmailVerificationBanner } from "./components/EmailVerificationBanner";
+import { TrialCountdownBanner } from "./components/TrialCountdownBanner";
 import { StatusPage } from "./components/StatusPage";
 import { ApiKeysPage } from "./components/ApiKeysPage";
 
@@ -313,6 +314,7 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
 
       {/* Main panel */}
       <div className="flex-1 flex flex-col min-w-0">
+        <TrialCountdownBanner />
         {/* Email verification nag — only when the multi-tenant session is
             present AND the user hasn't verified yet. */}
         {userEmail && !userEmailVerified && (

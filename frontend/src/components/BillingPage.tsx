@@ -29,7 +29,7 @@ function UsageBar({ label, used, max }: { label: string; used: number; max: numb
 }
 
 export function BillingPage() {
-  const { status, plans, invoices, loading, error, upgrade, managePortal, refresh } = useBilling();
+  const { status, plans, invoices, loading, error, upgrade, managePortal, refresh, payVnpay } = useBilling();
 
   if (loading) {
     return <div className="p-8 text-center text-gray-500 text-sm">Loading billing...</div>;
@@ -95,10 +95,19 @@ export function BillingPage() {
                 </ul>
                 {current ? (
                   <div className="text-xs text-emerald-400 text-center py-1.5">Current plan</div>
-                ) : (
+                ) : p.price_cents === 0 ? (
                   <button onClick={() => upgrade(p.id)} className="w-full px-3 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs">
-                    {p.price_cents > (plan.price_cents ?? 0) ? "Upgrade" : "Switch"}
+                    Switch
                   </button>
+                ) : (
+                  <div className="flex gap-1.5">
+                    <button onClick={() => upgrade(p.id)} className="flex-1 px-2 py-1.5 bg-emerald-600 hover:bg-emerald-500 text-white rounded text-xs">
+                      Stripe
+                    </button>
+                    <button onClick={() => payVnpay(p.id)} className="flex-1 px-2 py-1.5 bg-blue-600 hover:bg-blue-500 text-white rounded text-xs">
+                      VNPay
+                    </button>
+                  </div>
                 )}
               </div>
             );

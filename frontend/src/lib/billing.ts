@@ -91,4 +91,8 @@ export const billing = {
         return r.json() as Promise<Plan[]>;
       });
   },
+  startVnpayCheckout: (planId: string) =>
+    request<{url: string, vnp_TxnRef: string}>('/api/billing/vnpay/checkout', {
+      method: 'POST', body: JSON.stringify({plan_id: planId}),
+    }),
 };
