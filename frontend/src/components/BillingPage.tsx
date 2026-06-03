@@ -18,7 +18,14 @@ function UsageBar({ label, used, max }: { label: string; used: number; max: numb
           {used}{max == null ? " / ∞" : ` / ${max}`}
         </span>
       </div>
-      <div className="h-1.5 bg-surface-2 rounded overflow-hidden">
+      <div
+        className="h-1.5 bg-surface-2 rounded overflow-hidden"
+        role="progressbar"
+        aria-label={`${label} usage`}
+        aria-valuenow={used}
+        aria-valuemin={0}
+        aria-valuemax={max ?? undefined}
+      >
         {max != null && (
           <div className={`h-full ${overLimit ? "bg-red-500" : pct > 80 ? "bg-yellow-500" : "bg-emerald-500"}`}
                style={{ width: `${pct}%` }} />

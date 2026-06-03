@@ -27,7 +27,7 @@ test.describe("automations", () => {
     await page.getByRole("button", { name: /save|create/i }).first().click();
 
     // Automation should appear in the list.
-    await expect(page.getByText(name)).toBeVisible();
+    await expect(page.getByText(name).first()).toBeVisible();
 
     // Open it and create a version. The version editor accepts JSON; if a
     // textarea is exposed, fill a minimal flow document.
@@ -47,7 +47,7 @@ test.describe("automations", () => {
         .click();
     }
 
-    await expect(page.getByText(name)).toBeVisible();
+    await expect(page.getByText(name).first()).toBeVisible();
   });
 
   test("create flow automation with JSON DSL and v1 version", async ({
@@ -71,7 +71,7 @@ test.describe("automations", () => {
       });
     }
     await page.getByRole("button", { name: /save|create/i }).first().click();
-    await expect(page.getByText(name)).toBeVisible();
+    await expect(page.getByText(name).first()).toBeVisible();
 
     await page.getByText(name).first().click();
 

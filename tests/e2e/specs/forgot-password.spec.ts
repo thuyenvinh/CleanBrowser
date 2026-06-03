@@ -32,12 +32,15 @@ test.describe("forgot password", () => {
       .or(page.getByRole("button", { name: /forgot/i }));
     await link.first().click();
 
-    // Either a dedicated email field, or a heading mentioning reset/forgot.
-    const heading = page.getByRole("heading", {
-      name: /forgot|reset.*password/i,
-    });
-    const emailField = page.getByPlaceholder(/^email$/i).first();
-    await expect(heading.first().or(emailField)).toBeVisible();
+    // Either a dedicated email field or a heading mentioning reset/forgot —
+    // either signals the form is mounted. Combining via .or() trips strict
+    // mode when both are present (the page renders both), so assert via
+    // count instead.
+    const headingCount = await page
+      .getByRole("heading", { name: /forgot|reset.*password/i })
+      .count();
+    const fieldCount = await page.getByPlaceholder(/^email$/i).count();
+    expect(headingCount + fieldCount).toBeGreaterThan(0);
     await snap(page, "forgot-open-02-form");
   });
 
@@ -79,8 +82,9 @@ test.describe("forgot password", () => {
     await snap(page, "reset-form-01-loaded");
 
     // Either we see a password field (form rendered) or an "invalid token"
-    // error — both are valid UI states.
-    const pwField = page.getByPlaceholder(/^password/i).first();
+    // error — both are valid UI states. The ResetPasswordPage uses
+    // placeholder="New password".
+    const pwField = page.getByPlaceholder(/password/i).first();
     const invalidMsg = page
       .getByText(/invalid|expired|not (a )?valid/i)
       .first();

@@ -280,7 +280,7 @@ test.describe("auth", () => {
     // Expect four plan cards (Free / Starter / Pro / Enterprise — names may
     // vary, so we just count visible plan cards by their CTAs).
     const trialButtons = page.getByRole("button", {
-      name: /start trial|start free trial|try.*free|choose|select/i,
+      name: /start.*free.*trial|start trial|try.*free|sign up free|choose|select/i,
     });
     await expect(trialButtons.first()).toBeVisible();
     const plans = page.locator(

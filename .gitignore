@@ -25,3 +25,6 @@ publish-docker.sh
 .beads
 debug
 *.tsbuildinfo
+test-results/
+playwright-report/
+playwright-junit.xml

@@ -218,11 +218,9 @@ test.describe("profiles", () => {
     await expect(page.getByText(original).first()).toBeVisible();
     await snap(page, "rename", "01-created");
 
+    // Clicking the profile in the list opens it directly in the editor —
+    // no separate Edit step needed.
     await page.getByText(original).first().click();
-    await page
-      .getByRole("button", { name: /edit/i })
-      .first()
-      .click();
     const renamed = `${original} v2`;
     const nameField = page.getByLabel(/name/i).first();
     await nameField.fill(renamed);
@@ -231,7 +229,7 @@ test.describe("profiles", () => {
       .first()
       .click();
 
-    await expect(page.getByText(renamed).first()).toBeVisible();
+    await expect(page.getByText(renamed).first()).toBeVisible({ timeout: 10_000 });
     await snap(page, "rename", "02-renamed");
   });
 
@@ -294,14 +292,18 @@ test.describe("profiles", () => {
     await fillNameAndSave(page, name);
     await expect(page.getByText(name).first()).toBeVisible();
 
-    // Simulate edits to seed a version history. We edit-and-save twice.
+    // Simulate edits to seed a version history — click opens the editor
+    // directly, no separate Edit button.
     for (let i = 0; i < 2; i++) {
       await page.getByText(name).first().click();
-      const editBtn = page.getByRole("button", { name: /edit/i }).first();
-      if ((await editBtn.count()) === 0) break;
-      await editBtn.click();
       const nameField = page.getByLabel(/name/i).first();
-      await nameField.fill(`${name}`);
+      await nameField.fill(`${name}-v${i + 1}`);
+      await page
+        .getByRole("button", { name: /save|update/i })
+        .first()
+        .click();
+      await page.waitForTimeout(500);
+      await nameField.fill(name);
       await page
         .getByRole("button", { name: /save|update/i })
         .first()

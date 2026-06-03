@@ -68,9 +68,10 @@ test.describe("billing", () => {
 
     // We don't assert the exact placement; just that both payment providers
     // are surfaced somewhere on the billing page for at least one paid plan.
-    const stripe = page.getByText(/stripe/i).first();
-    const vnpay = page.getByText(/vnpay/i).first();
-    await expect(stripe.or(vnpay)).toBeVisible();
+    // Both providers ship on every paid tier; assert each is visible
+    // independently (combining with .or() trips Playwright's strict mode).
+    await expect(page.getByRole("button", { name: /^stripe$/i }).first()).toBeVisible();
+    await expect(page.getByRole("button", { name: /^vnpay$/i }).first()).toBeVisible();
   });
 
   test("Pricing page is public (no auth required)", async ({ page }) => {

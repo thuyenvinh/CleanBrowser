@@ -331,8 +331,8 @@ export function AutomationForm({
           </h3>
           <div className="space-y-3">
             <div>
-              <label className="label">Name</label>
-              <input
+              <label className="label" htmlFor="pf-name-1">Name</label>
+              <input id="pf-name-1"
                 className="input"
                 value={name}
                 onChange={(e) => setName(e.target.value)}
@@ -365,8 +365,8 @@ export function AutomationForm({
               )}
             </div>
             <div>
-              <label className="label">Description</label>
-              <textarea
+              <label className="label" htmlFor="pf-description-2">Description</label>
+              <textarea id="pf-description-2"
                 className="input"
                 rows={2}
                 value={description}
@@ -397,8 +397,8 @@ export function AutomationForm({
               </div>
               {automation.kind === "script" && (
                 <div className="mb-2">
-                  <label className="label">Language</label>
-                  <select
+                  <label className="label" htmlFor="pf-language-3">Language</label>
+              <select id="pf-language-3"
                     className="input"
                     value={scriptLanguage}
                     onChange={(e) =>
@@ -518,8 +518,8 @@ export function AutomationForm({
               </h3>
               <div className="flex items-end gap-2">
                 <div className="flex-1">
-                  <label className="label">Profile (optional)</label>
-                  <select
+                  <label className="label" htmlFor="pf-profile-optional-4">Profile (optional)</label>
+              <select id="pf-profile-optional-4"
                     className="input"
                     value={selectedProfileId}
                     onChange={(e) => setSelectedProfileId(e.target.value)}
