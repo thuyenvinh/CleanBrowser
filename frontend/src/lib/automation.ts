@@ -164,6 +164,11 @@ export const automation = {
     }),
   getRun: (run_id: string) =>
     request<AutomationRun>(`/api/automations/runs/${run_id}`),
+  cancelRun: (run_id: string) =>
+    request<{ cancelled: boolean; run_id: string }>(
+      `/api/automations/runs/${run_id}/cancel`,
+      { method: "POST" },
+    ),
 };
 
 // ---------------------------------------------------------------------------

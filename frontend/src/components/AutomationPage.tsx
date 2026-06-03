@@ -25,6 +25,7 @@ export function AutomationPage({ currentWorkspaceId }: AutomationPageProps) {
     update,
     delete: remove,
     touch,
+    cancelRun,
   } = useAutomations(currentWorkspaceId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mode, setMode] = useState<"empty" | "create" | "edit">("empty");
@@ -160,6 +161,16 @@ export function AutomationPage({ currentWorkspaceId }: AutomationPageProps) {
             } catch {
               // Surface failures silently in the modal — the run state will
               // simply stay stale until the user retries.
+            }
+          }}
+          onCancel={async () => {
+            const ok = await cancelRun(activeRun.id);
+            if (!ok) return;
+            try {
+              const fresh = await automationApi.getRun(activeRun.id);
+              setActiveRun(fresh);
+            } catch {
+              // Same fallthrough as the refresh handler above.
             }
           }}
         />

@@ -59,6 +59,13 @@ logger = logging.getLogger("cloakbrowser.automation")
 router = APIRouter(prefix="/api/automations", tags=["automations"])
 
 
+# Module-level task tracker so callers can cancel an in-flight run via the
+# REST API. Keyed by run_id → the asyncio.Task driving _execute_run_async.
+# Tasks remove themselves on completion (success / failure / cancellation),
+# so a stale entry here means the run is genuinely still in flight.
+_RUN_TASKS: dict[str, "asyncio.Task[None]"] = {}
+
+
 # ── Pydantic models ──────────────────────────────────────────────────────────
 #
 # These live in the router rather than ``backend.models`` to keep the
@@ -221,6 +228,13 @@ async def _execute_run_async(
         persist the resulting :class:`RunContext` state.
     """
     db = _db()
+    # Register this task so POST /runs/{run_id}/cancel can cancel us. The
+    # registration sits inside the outer try so the matching pop() in
+    # ``finally`` always runs, even if the task is cancelled before any
+    # real work happens.
+    current_task = asyncio.current_task()
+    if current_task is not None:
+        _RUN_TASKS[run_id] = current_task
     try:
         db.mark_run_running(run_id)
 
@@ -303,6 +317,22 @@ async def _execute_run_async(
                     getattr(result_ctx, "log_lines", []) or []
                 ),
             )
+    except asyncio.CancelledError:
+        # Cancellation arrives via the /cancel endpoint; the endpoint
+        # itself writes the terminal ``cancelled`` status, but we also
+        # mark it here defensively in case cancellation came from
+        # elsewhere (shutdown, GC). Swallowing CancelledError is fine —
+        # the task is going away and the caller doesn't await us.
+        logger.info("automation run %s cancelled", run_id)
+        try:
+            db.end_run(
+                run_id, "cancelled", error_message="Cancelled"
+            )
+        except Exception:
+            logger.exception(
+                "automation run %s: failed to record cancellation",
+                run_id,
+            )
     except Exception as exc:  # background task — never propagate
         logger.exception("automation run %s failed", run_id)
         try:
@@ -314,6 +344,10 @@ async def _execute_run_async(
                 "automation run %s: failed to record terminal status",
                 run_id,
             )
+    finally:
+        # Always drop the task reference so the tracker doesn't grow
+        # without bound. pop(default) is a no-op if we never registered.
+        _RUN_TASKS.pop(run_id, None)
 
 
 # ── Automation CRUD ──────────────────────────────────────────────────────────
@@ -605,6 +639,66 @@ async def get_run(
         raise
 
     return AutomationRun(**run)
+
+
+@router.post("/runs/{run_id}/cancel")
+def cancel_run(
+    run_id: str,
+    user: dict[str, Any] = Depends(get_current_user),
+):
+    """Cancel a queued or running automation run.
+
+    Authorization mirrors :func:`get_run` (walk run → version → automation
+    → workspace) but requires ``launcher+`` since the caller is effectively
+    aborting the same kind of action the trigger endpoint takes.
+
+    Effect:
+      * If the run's :mod:`asyncio` task is still alive in ``_RUN_TASKS``,
+        request cancellation. The task's ``CancelledError`` handler writes
+        the terminal status defensively.
+      * Always write ``status='cancelled'`` via :func:`db_automation.end_run`
+        so the row settles even if the task already finished writing some
+        other terminal state in the same tick (last-writer-wins is fine —
+        the user's intent was "stop billing me").
+
+    Returns 409 if the run is already in a terminal state.
+    """
+    db = _db()
+    run = db.get_run(run_id)
+    if not run:
+        raise HTTPException(status_code=404, detail="Run not found")
+    if run.get("status") not in ("queued", "running"):
+        raise HTTPException(
+            status_code=409,
+            detail=f"Cannot cancel run in status: {run.get('status')}",
+        )
+
+    version = db.get_version(run["automation_version_id"])
+    if not version:
+        raise HTTPException(status_code=404, detail="Run not found")
+    automation = db.get_automation(version["automation_id"])
+    if not automation:
+        raise HTTPException(status_code=404, detail="Run not found")
+
+    try:
+        check_role_for_workspace(
+            user, automation.get("workspace_id"), ROLE_LEVEL["launcher"]
+        )
+    except HTTPException as exc:
+        if exc.status_code == 404:
+            raise HTTPException(status_code=404, detail="Run not found")
+        raise
+
+    task = _RUN_TASKS.get(run_id)
+    if task is not None and not task.done():
+        task.cancel()
+
+    db.end_run(
+        run_id,
+        "cancelled",
+        error_message="Cancelled by user",
+    )
+    return {"cancelled": True, "run_id": run_id}
 
 
 # ── Schedules ────────────────────────────────────────────────────────────────

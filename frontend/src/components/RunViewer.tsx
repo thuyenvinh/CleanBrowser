@@ -7,13 +7,14 @@
  * ``ScheduleForm.tsx`` for the local-type shape.
  */
 import { RefreshCw, X } from "lucide-react";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import type { AutomationRun, AutomationRunStatus } from "../lib/automation";
 
 interface RunViewerProps {
   run: AutomationRun;
   onClose: () => void;
   onRefresh?: () => Promise<void> | void;
+  onCancel?: () => Promise<void> | void;
 }
 
 const STATUS_CLASSES: Record<AutomationRunStatus, string> = {
@@ -45,8 +46,11 @@ function formatTime(iso: string | null): string {
   return d.toLocaleString();
 }
 
-export function RunViewer({ run, onClose, onRefresh }: RunViewerProps) {
+export function RunViewer({ run, onClose, onRefresh, onCancel }: RunViewerProps) {
   const [refreshing, setRefreshing] = useState(false);
+  const [cancelling, setCancelling] = useState(false);
+
+  const isActive = run.status === "queued" || run.status === "running";
 
   const handleRefresh = async () => {
     if (!onRefresh) return;
@@ -57,6 +61,29 @@ export function RunViewer({ run, onClose, onRefresh }: RunViewerProps) {
       setRefreshing(false);
     }
   };
+
+  const handleCancel = async () => {
+    if (!onCancel) return;
+    setCancelling(true);
+    try {
+      await onCancel();
+    } finally {
+      setCancelling(false);
+    }
+  };
+
+  // Auto-refresh while the run is still in flight so the UI converges to
+  // the terminal state without the user having to mash the Refresh button.
+  // We poll every 2s — fast enough for short flows, slow enough that a
+  // dozen open tabs won't hammer the API. The effect tears down as soon
+  // as the status flips out of queued/running, or onRefresh disappears.
+  useEffect(() => {
+    if (!isActive || !onRefresh) return;
+    const id = setInterval(() => {
+      void onRefresh();
+    }, 2000);
+    return () => clearInterval(id);
+  }, [isActive, onRefresh]);
 
   const handleBackdropClick = (e: React.MouseEvent<HTMLDivElement>) => {
     if (e.target === e.currentTarget) onClose();
@@ -99,6 +126,16 @@ export function RunViewer({ run, onClose, onRefresh }: RunViewerProps) {
                   className={`h-3.5 w-3.5 ${refreshing ? "animate-spin" : ""}`}
                 />
                 <span>{refreshing ? "Refreshing..." : "Refresh"}</span>
+              </button>
+            )}
+            {onCancel && isActive && (
+              <button
+                type="button"
+                onClick={handleCancel}
+                disabled={cancelling}
+                className="btn-secondary flex items-center gap-1.5 text-red-300 border-red-500/40 hover:bg-red-500/10"
+              >
+                <span>{cancelling ? "Cancelling..." : "Cancel"}</span>
               </button>
             )}
             <button

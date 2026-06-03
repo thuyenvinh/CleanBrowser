@@ -92,6 +92,22 @@ export function useAutomations(currentWorkspaceId?: string | null) {
     setAutomations((prev) => prev.map((row) => (row.id === a.id ? a : row)));
   }, []);
 
+  // Cancel a queued/running run. Returns true on success so callers can
+  // decide whether to optimistically refresh / close the viewer; errors
+  // are surfaced via ``error`` like the rest of the hook.
+  const cancelRun = useCallback(async (runId: string): Promise<boolean> => {
+    try {
+      await automationApi.cancelRun(runId);
+      setError(null);
+      return true;
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to cancel run",
+      );
+      return false;
+    }
+  }, []);
+
   return {
     automations,
     loading,
@@ -101,5 +117,6 @@ export function useAutomations(currentWorkspaceId?: string | null) {
     update,
     delete: remove,
     touch,
+    cancelRun,
   };
 }
