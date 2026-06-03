@@ -91,7 +91,7 @@ def _check_auth(scope: Scope) -> bool:
                     return True
             break
 
-    # Check auth_token cookie
+    # Check auth_token cookie (legacy single-token) AND session cookie (JWT)
     for key, val in scope.get("headers", []):
         if key == b"cookie":
             cookies = SimpleCookie()
@@ -99,6 +99,23 @@ def _check_auth(scope: Scope) -> bool:
             if "auth_token" in cookies:
                 cookie_val = cookies["auth_token"].value
                 if cookie_val and hmac.compare_digest(cookie_val, AUTH_TOKEN):
+                    return True
+            # Multi-tenant JWT session — a valid signed token from the
+            # email/password flow is just as good as the legacy bearer.
+            if "session" in cookies:
+                from .auth_tokens import decode_session
+                if decode_session(cookies["session"].value) is not None:
+                    return True
+            break
+
+    # Also accept a JWT in the Authorization header (API keys / SDKs).
+    for key, val in scope.get("headers", []):
+        if key == b"authorization":
+            auth_value = val.decode()
+            if auth_value.startswith("Bearer "):
+                token = auth_value[7:]
+                from .auth_tokens import decode_session
+                if decode_session(token) is not None:
                     return True
             break
 

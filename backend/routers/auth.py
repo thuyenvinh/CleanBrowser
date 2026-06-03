@@ -113,7 +113,12 @@ def _workspace_public(ws_row: dict[str, Any]) -> dict[str, Any]:
 
 
 def _auth_payload(user_row: dict[str, Any]) -> dict[str, Any]:
-    workspaces = db_auth.list_workspaces_for_user(user_row["id"])
+    # Anonymous bootstrap (signup / login) runs before tenant GUC is set
+    # for the request; bypass RLS so the membership join returns rows.
+    from ..middleware_rls import system_context
+
+    with system_context():
+        workspaces = db_auth.list_workspaces_for_user(user_row["id"])
     return {
         "user": _user_public(user_row),
         "workspaces": [_workspace_public(w) for w in workspaces],
@@ -142,7 +147,7 @@ async def auth_status(request: starlette.requests.Request):
     # 1) JWT session cookie path — works regardless of AUTH_TOKEN.
     from ..dependencies import get_optional_user
 
-    user = get_optional_user(request)  # type: ignore[arg-type]
+    user = await get_optional_user(request)  # type: ignore[arg-type]
     if user is not None:
         authenticated = True
         user_public = _user_public(user)

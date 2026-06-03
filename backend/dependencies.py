@@ -143,7 +143,7 @@ async def _check_websocket_origin(websocket: WebSocket) -> bool:
 # ---------------------------------------------------------------------------
 
 
-def get_optional_user(request: Request) -> dict[str, Any] | None:
+async def get_optional_user(request: Request) -> dict[str, Any] | None:
     """Return the user dict for the current request, or ``None`` if unauth'd.
 
     Two auth paths, tried in order:
@@ -234,7 +234,7 @@ def get_optional_user(request: Request) -> dict[str, Any] | None:
     return user
 
 
-def get_current_user(
+async def get_current_user(
     user: dict[str, Any] | None = Depends(get_optional_user),
 ) -> dict[str, Any]:
     """Like :func:`get_optional_user` but raises 401 when missing."""
@@ -320,7 +320,7 @@ def require_role(*allowed: str) -> Callable[..., dict[str, Any]]:
         raise ValueError("require_role() needs at least one role")
     allowed_set = frozenset(allowed)
 
-    def _dep(
+    async def _dep(
         request: Request,
         user: dict[str, Any] = Depends(get_current_user),
     ) -> dict[str, Any]:
@@ -385,7 +385,7 @@ def require_quota(action: str) -> Callable[..., Any]:
     # being edited / not yet on disk during the wave's branch shuffling.
     from . import quota as _quota
 
-    def _dep(user: dict[str, Any] = Depends(get_current_user)) -> Any:
+    async def _dep(user: dict[str, Any] = Depends(get_current_user)) -> Any:
         result = _quota.check_quota(user["tenant_id"], action)  # type: ignore[arg-type]
         result.raise_if_exceeded()
         return result
@@ -407,7 +407,7 @@ def require_quota(action: str) -> Callable[..., Any]:
 # ---------------------------------------------------------------------------
 
 
-def require_verified_email(user: dict = Depends(get_current_user)) -> dict:
+async def require_verified_email(user: dict = Depends(get_current_user)) -> dict:
     """Block action if user hasn't verified email.
 
     Used on sensitive routes: workspace invite, API key creation, billing
