@@ -14,39 +14,59 @@ export async function signup(
   email: string,
   password = "password123",
 ): Promise<void> {
+  // Use the JSON signup endpoint to create the account and capture the
+  // session cookie from the response, then inject it into the browser
+  // context so the subsequent navigation lands directly in the app shell.
+  // UI-driven signup is exercised separately in auth.spec.ts via
+  // `signupViaUI` — this fast path is for setup in other specs.
+  const resp = await page.request.post("/api/auth/signup", {
+    data: { email, password },
+  });
+  if (!resp.ok()) {
+    throw new Error(`signup failed ${resp.status()}: ${await resp.text()}`);
+  }
+
+  // Copy cookies from the request context to the browser context.
+  const cookies = await page.request.storageState();
+  await page.context().addCookies(cookies.cookies);
+
+  await page.goto("/", { waitUntil: "domcontentloaded" });
+  await page
+    .getByRole("button", { name: /profiles|proxies|automations/i })
+    .first()
+    .waitFor({ timeout: 15_000 });
+}
+
+/**
+ * UI-driven signup — call this only from specs that explicitly test the
+ * signup form (auth.spec.ts). All other specs should use `signup()` which
+ * is the fast API-based variant.
+ */
+export async function signupViaUI(
+  page: Page,
+  email: string,
+  password = "password123",
+): Promise<void> {
   await page.goto("/", { waitUntil: "domcontentloaded" });
 
-  // Wait for either Login OR Signup heading; defensive against slow loading.
+  // Wait for the heading to confirm an auth page is rendered.
   await page
-    .getByRole("heading", { name: /CloakBrowser Manager|CleanBrowser/i })
+    .getByRole("heading", { name: /CloakBrowser Manager|CleanBrowser|Create your account|Welcome back/i })
     .first()
     .waitFor({ timeout: 10_000 });
 
-  // If we landed on the LoginPage, click the inline "Sign up" link.
-  // The LoginPage's submit button is "Sign in" — different text — so the
-  // /^sign up$/i match is unambiguous when on the LoginPage.
-  const switcher = page.getByRole("button", { name: /^sign up$/i });
-  if (await switcher.isVisible().catch(() => false)) {
-    // Heuristic: if the page already has a "Confirm password" field we are
-    // already on the SignupPage; the matching button is the submit. Don't
-    // click in that case.
-    const confirmField = page.getByPlaceholder(/confirm/i);
-    if (!(await confirmField.isVisible().catch(() => false))) {
-      await switcher.click();
-    }
+  // If on LoginPage, click the inline "Sign up" link first.
+  const confirmField = page.getByPlaceholder(/confirm/i);
+  if (!(await confirmField.isVisible().catch(() => false))) {
+    await page.getByRole("button", { name: /^sign up$/i }).click({ timeout: 5_000 }).catch(() => {});
+    await confirmField.waitFor({ timeout: 10_000 });
   }
-
-  // Wait for the SignupPage to be present (unique field).
-  await page
-    .getByPlaceholder(/confirm/i)
-    .waitFor({ timeout: 10_000 });
 
   await page.getByPlaceholder(/^email$/i).fill(email);
   await page.getByPlaceholder(/^password \(min/i).fill(password);
   await page.getByPlaceholder(/confirm/i).fill(password);
 
   await page.getByRole("button", { name: /^(sign up|create account)$/i }).click();
-  // After signup the app shell mounts. Wait for any of the post-auth tabs.
   await page
     .getByRole("button", { name: /profiles|proxies|automations/i })
     .first()

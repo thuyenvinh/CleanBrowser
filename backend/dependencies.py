@@ -165,14 +165,18 @@ def get_optional_user(request: Request) -> dict[str, Any] | None:
     if auth_header.lower().startswith("bearer "):
         api_token = auth_header[7:].strip()
         if api_token:
+            # Same RLS bypass rationale as the JWT path below.
+            from .middleware_rls import system_context as _sysctx
             try:
-                key_row = db_auth.get_api_key_by_token(api_token)
+                with _sysctx():
+                    key_row = db_auth.get_api_key_by_token(api_token)
             except Exception:
                 logger.exception("get_optional_user: api-key lookup failed")
                 key_row = None
             if key_row:
                 try:
-                    user = db_auth.get_user(key_row["user_id"])
+                    with _sysctx():
+                        user = db_auth.get_user(key_row["user_id"])
                 except Exception:
                     logger.exception(
                         "get_optional_user: db lookup failed for api-key user=%s",
@@ -197,8 +201,13 @@ def get_optional_user(request: Request) -> dict[str, Any] | None:
     if not user_id:
         clear_tenant()
         return None
+    # RLS RESTRICTIVE on `users` would block this lookup before any tenant
+    # context is pinned. Use system bypass for the identity check; we re-pin
+    # the tenant below once we've confirmed the JWT belongs to a real user.
+    from .middleware_rls import system_context
     try:
-        user = db_auth.get_user(user_id)
+        with system_context():
+            user = db_auth.get_user(user_id)
     except Exception:  # DB error: treat as unauth'd, don't 500 the caller
         logger.exception("get_optional_user: db lookup failed for sub=%s", user_id)
         clear_tenant()
