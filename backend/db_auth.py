@@ -203,6 +203,98 @@ def set_email_verified(user_id: str) -> None:
 
 
 # ---------------------------------------------------------------------------
+# Platform admin (cross-tenant super-admin)
+# ---------------------------------------------------------------------------
+
+
+def set_platform_admin(user_id: str, is_admin: bool) -> bool:
+    """Toggle the cross-tenant ``is_platform_admin`` flag.
+
+    Returns ``True`` if a row was actually updated. Callers are responsible
+    for auditing the change — `routers/admin` writes an audit event with
+    the actor + target so promotion / demotion shows up in incident
+    forensics.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE users
+                   SET is_platform_admin = %s, updated_at = now()
+                   WHERE id = %s""",
+                (is_admin, user_id),
+            )
+            updated = cur.rowcount > 0
+        conn.commit()
+    return updated
+
+
+def list_tenants(limit: int = 100, offset: int = 0) -> list[dict[str, Any]]:
+    """Return tenants ordered by ``created_at`` DESC for the admin console."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT t.*, COUNT(u.id) AS user_count
+                   FROM tenants t
+                   LEFT JOIN users u ON u.tenant_id = t.id
+                   GROUP BY t.id
+                   ORDER BY t.created_at DESC
+                   LIMIT %s OFFSET %s""",
+                (limit, offset),
+            )
+            return [_row_to_dict(r) for r in cur.fetchall()]  # type: ignore[misc]
+
+
+def list_users(
+    limit: int = 100,
+    offset: int = 0,
+    tenant_id: str | None = None,
+) -> list[dict[str, Any]]:
+    """Paginated cross-tenant user list (admin console).
+
+    ``password_hash`` and ``mfa_secret`` are intentionally projected away —
+    even an admin shouldn't see those.
+    """
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if tenant_id:
+                cur.execute(
+                    """SELECT id, tenant_id, email, status, email_verified_at,
+                              is_platform_admin, created_at, updated_at
+                       FROM users WHERE tenant_id = %s
+                       ORDER BY created_at DESC
+                       LIMIT %s OFFSET %s""",
+                    (tenant_id, limit, offset),
+                )
+            else:
+                cur.execute(
+                    """SELECT id, tenant_id, email, status, email_verified_at,
+                              is_platform_admin, created_at, updated_at
+                       FROM users
+                       ORDER BY created_at DESC
+                       LIMIT %s OFFSET %s""",
+                    (limit, offset),
+                )
+            return [_row_to_dict(r) for r in cur.fetchall()]  # type: ignore[misc]
+
+
+def set_user_status(user_id: str, status: str) -> bool:
+    """Flip ``users.status`` (typically ``active`` ↔ ``disabled``)."""
+    if status not in {"active", "disabled", "deleted"}:
+        raise ValueError(f"invalid status {status!r}")
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE users
+                   SET status = %s, updated_at = now()
+                   WHERE id = %s""",
+                (status, user_id),
+            )
+            updated = cur.rowcount > 0
+        conn.commit()
+    return updated
+
+
+# ---------------------------------------------------------------------------
 # Workspaces
 # ---------------------------------------------------------------------------
 

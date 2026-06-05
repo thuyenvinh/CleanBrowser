@@ -434,6 +434,23 @@ def require_quota(action: str) -> Callable[..., Any]:
 # ---------------------------------------------------------------------------
 
 
+async def require_platform_admin(
+    user: dict = Depends(get_current_user),
+) -> dict:
+    """Gate cross-tenant admin endpoints behind the ``is_platform_admin`` flag.
+
+    Platform admins are minted by ``scripts/seed_admin.py`` or by an
+    existing platform admin calling ``POST /api/admin/users/{id}/promote``.
+    The flag is checked on every request (no caching) so a demoted user
+    loses access at the next call without waiting for their JWT to expire.
+    """
+    if not user.get("is_platform_admin"):
+        # Don't leak the existence of the admin surface to non-admins —
+        # respond with the same 404 a non-existent route would give.
+        raise HTTPException(status_code=404, detail="Not found")
+    return user
+
+
 async def require_verified_email(user: dict = Depends(get_current_user)) -> dict:
     """Block action if user hasn't verified email.
 

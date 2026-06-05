@@ -39,6 +39,7 @@ from .dependencies import (
 )
 from .middleware_audit import AuditMiddleware
 from .rate_limit import limiter, RateLimitExceeded, _rate_limit_exceeded_handler
+from .routers import admin as admin_router
 from .routers import ai as ai_router
 from .routers import auth as auth_router
 from .routers import automations as automations_router
@@ -372,6 +373,7 @@ app.include_router(billing_router.router)
 app.include_router(ai_router.router)
 app.include_router(marketplace_router.router)
 app.include_router(webhooks_router.router)
+app.include_router(admin_router.router)
 
 
 # ── Static Frontend ───────────────────────────────────────────────────────────

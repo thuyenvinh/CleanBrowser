@@ -36,6 +36,7 @@ from ..dependencies import (
     check_role_for_workspace,
     get_current_user,
     get_optional_user,
+    require_platform_admin,
 )
 
 logger = logging.getLogger("cloakbrowser.marketplace")
@@ -442,16 +443,10 @@ def submit_app(
 
 @router.get("/admin/pending")
 def list_pending_apps(
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(require_platform_admin),
 ) -> list[dict[str, Any]]:
-    """List apps awaiting moderation.
-
-    Phase 6 phase 2: any authenticated user can view the queue — good
-    enough for solo / small-team deploys where the operator is also the
-    sole submitter. A proper super-admin check (tenant-level role) is
-    deferred to Phase 6 phase 3 when the admin console lands.
-    """
-    _ = user  # acknowledged: auth is the only gate this phase
+    """List apps awaiting moderation. Platform-admin only."""
+    _ = user
     return db_marketplace.list_pending()
 
 
@@ -459,10 +454,9 @@ def list_pending_apps(
 def admin_approve(
     app_id: str,
     body: dict[str, Any] | None = None,
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(require_platform_admin),
 ) -> dict[str, Any]:
     """Approve a pending submission — flips it to public + approved."""
-    _ = user
     body = body or {}
     app = db_marketplace.approve_app(
         app_id, moderation_notes=body.get("notes")
@@ -477,7 +471,7 @@ def admin_approve(
 def admin_reject(
     app_id: str,
     body: dict[str, Any],
-    user: dict[str, Any] = Depends(get_current_user),
+    user: dict[str, Any] = Depends(require_platform_admin),
 ) -> dict[str, Any]:
     """Reject a pending submission. Rejection notes are required so the
     creator gets actionable feedback in their submission history."""
