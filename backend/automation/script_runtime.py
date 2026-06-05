@@ -35,7 +35,19 @@ MAX_MEMORY_MB = int(os.environ.get("SCRIPT_MAX_MEMORY_MB", "4096"))
 
 
 def is_available() -> bool:
-    """Check if Node + runner.js are available."""
+    """Check if Node + runner.js are available and script kind is enabled.
+
+    Defaults to **disabled** in any environment that doesn't explicitly opt
+    in via ``SCRIPT_RUNTIME_ENABLED=true``. The Phase 7 phase 1 sandbox
+    (``vm.createContext``) is documented as **not** blocking ``fs`` /
+    ``child_process`` access; running it without a proper isolate
+    (Firecracker, gVisor, nsjail) means a hostile script can read backend
+    files and env. Security review C-04 — set the env var only after you
+    have wrapped Node in a real isolation primitive at the deployment
+    layer.
+    """
+    if os.environ.get("SCRIPT_RUNTIME_ENABLED", "").lower() != "true":
+        return False
     return shutil.which("node") is not None and _RUNNER_JS.exists()
 
 
@@ -75,8 +87,11 @@ async def execute_script(
             "log": "",
             "vars": {},
             "error": (
-                "Node runtime not available — install Node.js to enable "
-                "script mode"
+                "Script runtime is disabled. The Phase 7 phase 1 sandbox does "
+                "not isolate fs / child_process from user code — enable "
+                "SCRIPT_RUNTIME_ENABLED=true ONLY after wrapping Node in a "
+                "real isolation primitive (Firecracker / gVisor / nsjail) at "
+                "the deployment layer."
             ),
         }
 

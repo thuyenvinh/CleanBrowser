@@ -9,7 +9,7 @@ Phase 7 phase 2: writes happen synchronously inside the audit middleware
 docs/CLICKHOUSE.md for the recommended deployment topology.
 """
 from __future__ import annotations
-import json, logging, os, threading
+import json, logging, os, re, threading
 from datetime import datetime, timezone
 from typing import Any
 
@@ -18,6 +18,23 @@ logger = logging.getLogger(__name__)
 _client = None
 _lock = threading.Lock()
 _SCHEMA_CREATED = False
+
+# Identifier guard for CLICKHOUSE_TABLE. We splice the value into DDL / DML
+# via f-strings; without this an operator misconfiguring the env (or an
+# attacker who can write the deployment env) could pivot to arbitrary
+# ClickHouse statements. Security review L-02.
+_TABLE_NAME_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]{0,62}$")
+
+
+def _table_name() -> str:
+    name = os.environ.get("CLICKHOUSE_TABLE", "audit_logs")
+    if not _TABLE_NAME_RE.match(name):
+        raise RuntimeError(
+            f"CLICKHOUSE_TABLE={name!r} is not a valid identifier "
+            "(must match ^[A-Za-z_][A-Za-z0-9_]*$, max 63 chars)"
+        )
+    return name
+
 
 def is_configured() -> bool:
     return bool(os.environ.get("CLICKHOUSE_URL"))
@@ -70,7 +87,7 @@ def ensure_schema() -> None:
     client = _get_client()
     if client is None:
         return
-    table = os.environ.get("CLICKHOUSE_TABLE", "audit_logs")
+    table = _table_name()
     try:
         client.execute(_DDL.format(table=table))
         _SCHEMA_CREATED = True
@@ -97,7 +114,7 @@ def write(
     if client is None:
         return False
     ensure_schema()
-    table = os.environ.get("CLICKHOUSE_TABLE", "audit_logs")
+    table = _table_name()
     row = {
         "id": id,
         "tenant_id": tenant_id,
@@ -123,7 +140,7 @@ def query_for_tenant(tenant_id: str, limit: int = 100) -> list[dict]:
     client = _get_client()
     if client is None:
         return []
-    table = os.environ.get("CLICKHOUSE_TABLE", "audit_logs")
+    table = _table_name()
     rows = client.execute(
         f"SELECT id, tenant_id, actor_user_id, action, resource_type, resource_id, "
         f"ip, user_agent, status, payload, ts FROM {table} "

@@ -79,8 +79,59 @@ logging.getLogger("asyncio").setLevel(logging.WARNING)
 AUTH_TOKEN: str | None = os.environ.get("AUTH_TOKEN") or None
 
 
+def _assert_production_safety() -> None:
+    """Fail-closed boot guard: refuse to start with insecure defaults in prod.
+
+    Active only when ``APP_ENV=production``. Catches the deployment foot-guns
+    that the security review flagged as Critical/High:
+      * empty AUTH_TOKEN + no JWT_SECRET → unauthenticated by default
+      * COOKIE_SECURE off → session cookie sent over plaintext
+      * rate-limit storage stuck on in-process memory across replicas
+    """
+    if os.environ.get("APP_ENV", "").lower() != "production":
+        return
+
+    errors: list[str] = []
+    if not (os.environ.get("AUTH_TOKEN") or os.environ.get("JWT_SECRET")):
+        errors.append(
+            "Neither AUTH_TOKEN nor JWT_SECRET is set. At least one must be "
+            "configured in production — running without an auth secret leaves "
+            "every /api/* endpoint exposed."
+        )
+    if not os.environ.get("JWT_SECRET"):
+        errors.append(
+            "JWT_SECRET is not set. The ephemeral per-process fallback "
+            "invalidates sessions on every restart and breaks multi-replica "
+            "deployments — set JWT_SECRET in production."
+        )
+    if os.environ.get("COOKIE_SECURE", "false").lower() != "true":
+        errors.append(
+            "COOKIE_SECURE is not 'true'. Session cookies will be issued "
+            "without the Secure flag — set COOKIE_SECURE=true in production."
+        )
+    storage_uri = os.environ.get("RATE_LIMIT_STORAGE_URI", "memory://")
+    if storage_uri.startswith("memory://"):
+        errors.append(
+            "RATE_LIMIT_STORAGE_URI is 'memory://'. Per-process rate limits "
+            "are bypassable across replicas — point this at Redis "
+            "(redis://host:6379) in production."
+        )
+    if errors:
+        bullets = "\n  - ".join(errors)
+        raise RuntimeError(
+            f"Refusing to start: insecure production configuration.\n  - {bullets}"
+        )
+
+
+_assert_production_safety()
+
+
 def _check_auth(scope: Scope) -> bool:
     """Check if the request has a valid auth token (header or cookie)."""
+    # Defensive guard: callers must short-circuit when AUTH_TOKEN is None,
+    # but if they don't, hmac.compare_digest would raise on a None operand.
+    if AUTH_TOKEN is None:
+        return False
     # Check Authorization: Bearer <token> header
     for key, val in scope.get("headers", []):
         if key == b"authorization":
@@ -120,6 +171,106 @@ def _check_auth(scope: Scope) -> bool:
             break
 
     return False
+
+
+_STATE_CHANGING_METHODS = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+# Endpoints that need to accept cross-origin POSTs from external providers
+# (Stripe, VNPay, OAuth IdPs, integrations posting to public webhooks).
+# Anything not on this prefix list is required to be same-origin when
+# making a state-changing request — defends against CSRF in case the
+# session cookie's SameSite=Lax isn't enough (e.g. a reverse proxy that
+# adds a permissive ``Access-Control-Allow-Origin`` upstream).
+_CSRF_EXEMPT_PREFIXES: tuple[str, ...] = (
+    "/api/billing/webhook",
+    "/api/billing/vnpay/return",
+    "/api/webhooks/",
+    "/api/auth/oauth/",
+    "/api/marketplace/install/complete",
+)
+
+
+class CsrfOriginMiddleware:
+    """Defence-in-depth Origin/Referer check for state-changing requests.
+
+    SameSite=Lax on the session cookie already blocks cross-site POST
+    submissions, but two failure modes bypass it: (a) a reverse proxy in
+    front of FastAPI advertises ``Access-Control-Allow-Origin: *`` and
+    leaves preflight to the app, (b) an attacker hosts a same-origin
+    payload via subdomain takeover. Reject state-changing requests whose
+    Origin / Referer doesn't match the Host header.
+
+    Security review H-03 / L-05.
+    """
+
+    def __init__(self, app: ASGIApp):
+        self.app = app
+
+    @staticmethod
+    def _header(scope: Scope, name: bytes) -> str | None:
+        for key, val in scope.get("headers", []):
+            if key == name:
+                return val.decode("latin-1")
+        return None
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send):
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        method = scope.get("method", "GET").upper()
+        if method not in _STATE_CHANGING_METHODS:
+            await self.app(scope, receive, send)
+            return
+        path = scope.get("path", "")
+        if not path.startswith("/api/"):
+            await self.app(scope, receive, send)
+            return
+        if any(path.startswith(p) for p in _CSRF_EXEMPT_PREFIXES):
+            await self.app(scope, receive, send)
+            return
+
+        origin = self._header(scope, b"origin")
+        referer = self._header(scope, b"referer")
+        host = self._header(scope, b"host") or ""
+        # ``Origin: null`` is sent by browsers for opaque sources (sandboxed
+        # iframes, file://, redirects, Playwright APIRequestContext). For
+        # CSRF purposes a "null" claim is no claim — treat it like missing.
+        if origin == "null":
+            origin = None
+        if not origin and not referer:
+            # Non-browser clients (curl, SDKs, server-to-server) don't send
+            # Origin / Referer; cookies aren't auto-attached either, so the
+            # CSRF threat doesn't apply. Let the auth layer below decide.
+            await self.app(scope, receive, send)
+            return
+
+        from urllib.parse import urlparse
+
+        def _host_of(value: str | None) -> str:
+            if not value:
+                return ""
+            try:
+                parsed = urlparse(value)
+            except ValueError:
+                return ""
+            netloc = parsed.netloc or parsed.path
+            return netloc.split("@")[-1]  # strip user:pass@ if present
+
+        candidate = _host_of(origin) or _host_of(referer)
+        # Normalise default-port suffixes (":80"/":443") on both sides.
+        def _strip_default_port(value: str) -> str:
+            for suffix in (":80", ":443"):
+                if value.endswith(suffix):
+                    return value[: -len(suffix)]
+            return value
+
+        if _strip_default_port(candidate) != _strip_default_port(host):
+            response = JSONResponse(
+                {"detail": "Cross-origin request rejected"}, status_code=403
+            )
+            await response(scope, receive, send)
+            return
+
+        await self.app(scope, receive, send)
 
 
 class AuthMiddleware:
@@ -196,11 +347,14 @@ app = FastAPI(title="CloakBrowser Manager", lifespan=lifespan)
 app.state.limiter = limiter
 app.add_exception_handler(RateLimitExceeded, _rate_limit_exceeded_handler)
 # Starlette applies middleware in reverse registration order (last-registered
-# is outermost). We want AuthMiddleware to run BEFORE AuditMiddleware so the
-# auth dependency has a chance to populate ``request.state.user`` that
-# AuditMiddleware reads. Register Audit FIRST so Auth ends up outermost.
+# is outermost). Order we want at runtime (outer → inner):
+#   CsrfOriginMiddleware  → reject cross-origin POST/PUT/DELETE first
+#   AuthMiddleware        → legacy AUTH_TOKEN / JWT bearer/cookie check
+#   AuditMiddleware       → reads request.state.user, must run last
+# Registration order is the reverse of the above.
 app.add_middleware(AuditMiddleware)
 app.add_middleware(AuthMiddleware)
+app.add_middleware(CsrfOriginMiddleware)
 
 # Mount domain routers — order doesn't affect routing, but we list them
 # from most specific to least specific for readability.
@@ -226,12 +380,43 @@ app.include_router(webhooks_router.router)
 if FRONTEND_DIR.exists():
     app.mount("/assets", StaticFiles(directory=FRONTEND_DIR / "assets"), name="assets")
 
+    # Extensions the SPA root is allowed to serve directly (icons, manifest,
+    # favicon, fonts, vite static metadata). Everything else falls through
+    # to index.html so the React router can handle the route — and
+    # importantly, so a traversal payload pointing at /etc/passwd or any
+    # other server-side file gets a harmless SPA shell instead.
+    _SPA_SERVE_EXTS = frozenset({
+        ".html", ".js", ".css", ".map", ".json", ".txt", ".xml",
+        ".png", ".jpg", ".jpeg", ".gif", ".svg", ".webp", ".ico",
+        ".woff", ".woff2", ".ttf", ".otf", ".eot",
+    })
+    _FRONTEND_ROOT = FRONTEND_DIR.resolve()
+
     @app.get("/{full_path:path}")
     async def serve_spa(full_path: str):
-        """Serve React SPA — all non-API routes return index.html."""
+        """Serve React SPA — all non-API routes return index.html.
+
+        Defends against path traversal (security review finding C-03) by
+        resolving the requested path and verifying it stays inside the
+        frontend build directory before calling ``FileResponse``. Anything
+        suspicious (escape, non-whitelisted extension) silently falls back
+        to ``index.html`` so the SPA can handle the route.
+        """
         if full_path.startswith("api/"):
             raise HTTPException(status_code=404, detail="Not found")
-        file_path = FRONTEND_DIR / full_path
-        if full_path and file_path.exists() and file_path.is_file():
-            return FileResponse(file_path)
-        return FileResponse(FRONTEND_DIR / "index.html")
+        if not full_path:
+            return FileResponse(_FRONTEND_ROOT / "index.html")
+        try:
+            candidate = (_FRONTEND_ROOT / full_path).resolve()
+        except (OSError, ValueError):
+            return FileResponse(_FRONTEND_ROOT / "index.html")
+        # Containment check: resolved path must be inside the frontend dir.
+        try:
+            candidate.relative_to(_FRONTEND_ROOT)
+        except ValueError:
+            return FileResponse(_FRONTEND_ROOT / "index.html")
+        if candidate.suffix.lower() not in _SPA_SERVE_EXTS:
+            return FileResponse(_FRONTEND_ROOT / "index.html")
+        if candidate.exists() and candidate.is_file():
+            return FileResponse(candidate)
+        return FileResponse(_FRONTEND_ROOT / "index.html")

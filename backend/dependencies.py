@@ -46,7 +46,9 @@ _AUTH_EXEMPT = frozenset(
         "/api/auth/forgot-password",
         "/api/auth/reset-password",
         "/api/auth/verify-email",
-        "/api/status",
+        # ``/api/status`` returns global counters (profiles_total) and is NOT
+        # public — security review H-04 moved it behind auth. Marketing /
+        # status-page traffic continues to use ``/api/status/public``.
         "/api/status/public",
         "/api/billing/plans/public",
     }
@@ -221,6 +223,31 @@ async def get_optional_user(request: Request) -> dict[str, Any] | None:
     if payload.get("tid") and payload["tid"] != user.get("tenant_id"):
         clear_tenant()
         return None
+    # Reject tokens issued before the most recent password change
+    # (security review M-07). The JWT ``iat`` claim is a unix epoch; we
+    # compare it against ``users.password_changed_at`` so resetting a
+    # password instantly invalidates every outstanding cookie. Missing
+    # ``iat`` (legacy tokens) defaults to "valid" — they'll expire on
+    # their own 24h TTL.
+    iat = payload.get("iat")
+    pwd_changed = user.get("password_changed_at")
+    if iat is not None and pwd_changed:
+        # ``password_changed_at`` round-trips through ``_row_to_dict`` as an
+        # ISO-8601 string. Parse defensively — a corrupt timestamp must not
+        # accidentally lock out the entire user base.
+        try:
+            import datetime as _dt
+            if isinstance(pwd_changed, str):
+                pwd_changed = _dt.datetime.fromisoformat(pwd_changed)
+            pwd_changed_epoch = int(pwd_changed.timestamp())
+            if int(iat) < pwd_changed_epoch:
+                clear_tenant()
+                return None
+        except (ValueError, TypeError, AttributeError):
+            logger.warning(
+                "password_changed_at parse failed for user=%s — allowing session",
+                user_id,
+            )
     # Expose the user dict on request.state so downstream middleware (notably
     # AuditMiddleware) can attribute actions to the authenticated actor. We
     # only set this when we have a real user — unauthenticated requests leave

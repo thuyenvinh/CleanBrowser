@@ -61,10 +61,15 @@ def encode_session(user_id: str, tenant_id: str) -> str:
 
 
 def decode_session(token: str) -> dict[str, Any] | None:
-    """Decode a JWT. Returns ``None`` on any failure (expired, bad sig, etc.)."""
+    """Decode a JWT. Returns ``None`` on any failure (expired, bad sig, etc.).
+
+    Failures are logged at DEBUG with only the exception type so a SIEM can
+    distinguish "expired" from "tampered" without dumping the bearer secret.
+    """
     if not token:
         return None
     try:
         return jwt.decode(token, JWT_SECRET, algorithms=[JWT_ALGO])
-    except jwt.PyJWTError:
+    except jwt.PyJWTError as exc:
+        logger.debug("JWT decode failed: %s", type(exc).__name__)
         return None

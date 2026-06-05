@@ -10,6 +10,65 @@ from typing import Any
 
 logger = logging.getLogger(__name__)
 
+# Whitelist of node types the interpreter understands. The LLM is instructed
+# to stay within this set, but a prompt-injection / model drift could emit
+# node types that the interpreter happens to accept (e.g. ``js_eval``,
+# ``http_request``). Security review M-05: reject any output that introduces
+# a node type outside this set instead of trusting the model.
+_ALLOWED_NODE_TYPES: frozenset[str] = frozenset({
+    "goto_url",
+    "click",
+    "type",
+    "wait",
+    "wait_seconds",
+    "extract",
+    "condition",
+    "loop",
+    "set_variable",
+    "log",
+})
+
+_MAX_NODES_PER_FLOW = 200
+
+
+def _validate_dsl(data: Any) -> dict[str, Any]:
+    """Strict schema check for the generated flow. Raises ``ValueError``.
+
+    Enforced invariants:
+      * top-level ``nodes`` is a list, ``start`` is a string
+      * every node is a dict with ``id`` + ``type``; type is in
+        :data:`_ALLOWED_NODE_TYPES`
+      * ``start`` references an existing node id
+      * the node graph is bounded by :data:`_MAX_NODES_PER_FLOW`
+    """
+    if not isinstance(data, dict):
+        raise ValueError("DSL root must be an object")
+    if "nodes" not in data or "start" not in data:
+        raise ValueError("missing nodes or start in generated DSL")
+    nodes = data["nodes"]
+    if not isinstance(nodes, list):
+        raise ValueError("DSL 'nodes' must be a list")
+    if not nodes:
+        raise ValueError("DSL 'nodes' must not be empty")
+    if len(nodes) > _MAX_NODES_PER_FLOW:
+        raise ValueError(
+            f"DSL contains {len(nodes)} nodes (max {_MAX_NODES_PER_FLOW})"
+        )
+    ids: set[str] = set()
+    for n in nodes:
+        if not isinstance(n, dict):
+            raise ValueError("each node must be an object")
+        nid = n.get("id")
+        ntype = n.get("type")
+        if not isinstance(nid, str) or not nid:
+            raise ValueError("node missing string 'id'")
+        if not isinstance(ntype, str) or ntype not in _ALLOWED_NODE_TYPES:
+            raise ValueError(f"node {nid!r} has unsupported type {ntype!r}")
+        ids.add(nid)
+    if data["start"] not in ids:
+        raise ValueError(f"start {data['start']!r} does not match any node id")
+    return data
+
 _SYSTEM_PROMPT = '''You are an automation flow builder for CleanBrowser, an antidetect browser product.
 Given a user's natural-language description, output a JSON DSL flow for the interpreter.
 
@@ -67,9 +126,7 @@ async def generate_flow(prompt: str) -> dict[str, Any]:
             if text.startswith("json"): text = text[4:]
             text = text.strip()
         data = json.loads(text)
-        if "nodes" not in data or "start" not in data:
-            raise ValueError("missing nodes or start in generated DSL")
-        return data
+        return _validate_dsl(data)
     except Exception as e:
         logger.exception("AI flow generation failed")
         raise ValueError(f"Failed to generate flow: {e}") from e

@@ -11,6 +11,11 @@ on:
       - "tests/e2e/**"
       - ".github/workflows/e2e.yml"
 
+# Least privilege — workflow reads source + uploads artifacts (handled by
+# the actions/upload-artifact action, which doesn't need contents:write).
+permissions:
+  contents: read
+
 concurrency:
   group: e2e-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

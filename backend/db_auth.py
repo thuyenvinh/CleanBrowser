@@ -167,12 +167,21 @@ def get_user_by_email(email: str) -> dict[str, Any] | None:
 
 
 def update_user_password(user_id: str, new_password: str) -> bool:
+    """Hash + store ``new_password`` and bump ``password_changed_at``.
+
+    The timestamp drives JWT invalidation in :func:`get_optional_user`
+    (security review M-07): any session token whose ``iat`` predates the
+    new ``password_changed_at`` is rejected, so a leaked cookie stops
+    working the moment the legitimate user rotates their password.
+    """
     pw_hash = hash_password(new_password)
     with get_db() as conn:
         with conn.cursor() as cur:
             cur.execute(
                 """UPDATE users
-                   SET password_hash = %s, updated_at = now()
+                   SET password_hash = %s,
+                       password_changed_at = now(),
+                       updated_at = now()
                    WHERE id = %s""",
                 (pw_hash, user_id),
             )

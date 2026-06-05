@@ -9,6 +9,11 @@ on:
     branches:
       - main
 
+# Least privilege — workflow only reads source for build/test. Bump
+# explicitly on a per-job basis if a future step needs write access.
+permissions:
+  contents: read
+
 concurrency:
   group: ci-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true

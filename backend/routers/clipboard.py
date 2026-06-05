@@ -1,14 +1,27 @@
-"""Clipboard relay endpoints (set/get the VNC session's X clipboard)."""
+"""Clipboard relay endpoints (set/get the VNC session's X clipboard).
+
+Workspace-scoped: the caller must be a member of the profile's workspace
+with at least ``launcher`` role. Without this, anyone who knew a profile
+id could read or inject text into another tenant's running browser
+session (security review finding C-02).
+"""
 
 from __future__ import annotations
 
 import asyncio
 import logging
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 
-from ..dependencies import browser_mgr
+from .. import database as db
+from ..dependencies import (
+    ROLE_LEVEL,
+    browser_mgr,
+    check_role_for_workspace,
+    get_current_user,
+)
 from ..models import ClipboardRequest
+from ..rate_limit import limiter
 
 logger = logging.getLogger("cloakbrowser.manager")
 
@@ -20,9 +33,28 @@ _CLIPBOARD_MAX_READ = 1_048_576  # 1MB cap on GET response
 _xclip_procs: dict[int, asyncio.subprocess.Process] = {}
 
 
+def _authorize_profile(profile_id: str, user: dict | None) -> None:
+    """Resolve profile + enforce ``launcher`` role on its workspace.
+
+    Returns 404 when the user isn't a workspace member, matching the
+    leak-avoidance convention used by the rest of the multi-tenant layer.
+    """
+    profile = db.get_profile(profile_id)
+    if not profile:
+        raise HTTPException(status_code=404, detail="Profile not found")
+    check_role_for_workspace(user, profile.get("workspace_id"), ROLE_LEVEL["launcher"])
+
+
 @router.post("/{profile_id}/clipboard")
-async def set_clipboard(profile_id: str, body: ClipboardRequest):
+@limiter.limit("60/minute")
+async def set_clipboard(
+    profile_id: str,
+    body: ClipboardRequest,
+    request: Request,  # noqa: ARG001 — required by the rate limiter
+    user: dict = Depends(get_current_user),
+):
     """Push text into the VNC session's X clipboard via xclip."""
+    _authorize_profile(profile_id, user)
     running = browser_mgr.running.get(profile_id)
     if not running:
         raise HTTPException(status_code=404, detail="Profile not running")
@@ -55,13 +87,19 @@ async def set_clipboard(profile_id: str, body: ClipboardRequest):
 
 
 @router.get("/{profile_id}/clipboard")
-async def get_clipboard(profile_id: str):
+@limiter.limit("120/minute")
+async def get_clipboard(
+    profile_id: str,
+    request: Request,  # noqa: ARG001 — required by the rate limiter
+    user: dict = Depends(get_current_user),
+):
     """Read the VNC session's clipboard.
 
     Chrome doesn't write to X11 clipboard under KasmVNC, so xclip can't read it.
     Instead, read via Playwright's CDP connection to Chrome (navigator.clipboard.readText).
     Falls back to xclip for non-Chrome clipboard owners.
     """
+    _authorize_profile(profile_id, user)
     running = browser_mgr.running.get(profile_id)
     if not running:
         raise HTTPException(status_code=404, detail="Profile not running")

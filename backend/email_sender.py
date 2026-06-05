@@ -31,6 +31,25 @@ def is_configured() -> bool:
     return bool(os.environ.get("SMTP_HOST"))
 
 
+def _mask_tokens(body: str) -> str:
+    """Replace ``token=<plaintext>`` style query params in dev-log output.
+
+    Verification / reset emails contain one-shot bearer tokens; leaving the
+    plaintext in stdout means anyone reading the log can complete the
+    target user's flow (security review L-01). We keep the first / last 4
+    chars so a developer can still correlate a click with a log line.
+    """
+    import re
+
+    def _replace(match: "re.Match[str]") -> str:
+        token = match.group(1)
+        if len(token) <= 8:
+            return f"token={'*' * len(token)}"
+        return f"token={token[:4]}…{token[-4:]}"
+
+    return re.sub(r"token=([A-Za-z0-9_\-.]+)", _replace, body)
+
+
 def send(
     to: str,
     subject: str,
@@ -41,11 +60,15 @@ def send(
 
     Dev mode (no ``SMTP_HOST``) logs the rendered body at INFO so a developer
     clicking a verification link from the server log can complete the flow
-    without a real mailer in front of them.
+    without a real mailer in front of them. Token query params are masked
+    so the log line can be shared without leaking the one-shot secret.
     """
     if not is_configured():
         logger.info(
-            "[email-dev-mode] To=%s Subject=%s\n%s", to, subject, body_text
+            "[email-dev-mode] To=%s Subject=%s\n%s",
+            to,
+            subject,
+            _mask_tokens(body_text),
         )
         return True
 
