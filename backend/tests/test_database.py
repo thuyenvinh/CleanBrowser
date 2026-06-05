@@ -1,4 +1,4 @@
-"""Tests for SQLite CRUD operations."""
+"""Tests for PostgreSQL CRUD operations."""
 
 from __future__ import annotations
 
@@ -15,10 +15,12 @@ from backend import database as db
 
 def test_init_db_creates_tables(tmp_db: Path):
     with db.get_db() as conn:
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
-        names = {r["name"] for r in tables}
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
+            )
+            names = {r[0] for r in cur.fetchall()}
     assert "profiles" in names
     assert "profile_tags" in names
 
@@ -27,9 +29,12 @@ def test_init_db_idempotent(tmp_db: Path):
     # Second call should not crash
     db.init_db()
     with db.get_db() as conn:
-        tables = conn.execute(
-            "SELECT name FROM sqlite_master WHERE type='table'"
-        ).fetchall()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT table_name FROM information_schema.tables "
+                "WHERE table_schema = 'public'"
+            )
+            tables = cur.fetchall()
     assert len(tables) >= 2
 
 
@@ -77,7 +82,7 @@ def test_create_profile_all_fields(tmp_db: Path):
     assert p["platform"] == "macos"
     assert p["gpu_vendor"] == "NVIDIA"
     assert p["hardware_concurrency"] == 16
-    assert p["humanize"] == 1  # SQLite stores bool as int
+    assert p["humanize"] is True
     assert p["human_preset"] == "careful"
     assert p["color_scheme"] == "dark"
 
@@ -100,9 +105,9 @@ def test_create_profile_defaults(tmp_db: Path):
     assert p["platform"] == "windows"
     assert p["screen_width"] == 1920
     assert p["screen_height"] == 1080
-    assert p["humanize"] == 0
-    assert p["headless"] == 0
-    assert p["geoip"] == 0
+    assert p["humanize"] is False
+    assert p["headless"] is False
+    assert p["geoip"] is False
     assert p["human_preset"] == "default"
     assert p["launch_args"] == []
 
@@ -232,7 +237,9 @@ def test_delete_profile_cascades_tags(tmp_db: Path):
     db.delete_profile(p["id"])
     # Verify tags are gone
     with db.get_db() as conn:
-        rows = conn.execute(
-            "SELECT * FROM profile_tags WHERE profile_id = ?", (p["id"],)
-        ).fetchall()
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT * FROM profile_tags WHERE profile_id = %s", (p["id"],)
+            )
+            rows = cur.fetchall()
     assert len(rows) == 0

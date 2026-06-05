@@ -1,92 +1,228 @@
-"""SQLite database operations for browser profiles."""
+"""PostgreSQL database operations for browser profiles.
+
+This module replaces the previous SQLite implementation while preserving the
+public API surface used by other backend modules:
+
+    init_db()
+    create_profile(name, fingerprint_seed=None, **fields) -> dict
+    get_profile(profile_id) -> dict | None
+    list_profiles() -> list[dict]
+    update_profile(profile_id, **fields) -> dict | None
+    delete_profile(profile_id) -> bool
+
+Schema is owned by Alembic migrations (see ``backend/alembic``); ``init_db``
+only validates connectivity. Parameter style is ``%s`` (psycopg2) instead of
+``?``. ``launch_args`` is stored as native JSONB.
+"""
 
 from __future__ import annotations
 
 import datetime
 import json
+import os
 import random
-import sqlite3
+import threading
 import uuid
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Any
 
+import psycopg2
+import psycopg2.extras
+from psycopg2.pool import SimpleConnectionPool
+
+# Kept for backwards-compat with callers that derive paths (e.g. user_data_dir).
 DATA_DIR = Path("/data")
-DB_PATH = DATA_DIR / "profiles.db"
+
+_POOL: SimpleConnectionPool | None = None
+_POOL_LOCK = threading.Lock()
+
+
+def _database_url() -> str:
+    url = os.environ.get("DATABASE_URL")
+    if not url:
+        raise RuntimeError(
+            "DATABASE_URL environment variable is required "
+            "(e.g. postgresql://user:pass@host:5432/dbname)"
+        )
+    return url
+
+
+def _get_pool() -> SimpleConnectionPool:
+    global _POOL
+    if _POOL is None:
+        with _POOL_LOCK:
+            if _POOL is None:
+                _POOL = SimpleConnectionPool(
+                    minconn=1,
+                    maxconn=int(os.environ.get("DATABASE_POOL_MAX", "10")),
+                    dsn=_database_url(),
+                )
+    return _POOL
 
 
 @contextmanager
 def get_db():
-    conn = sqlite3.connect(str(DB_PATH))
-    conn.row_factory = sqlite3.Row
-    conn.execute("PRAGMA journal_mode=WAL")
-    conn.execute("PRAGMA foreign_keys=ON")
+    """Yield a psycopg2 connection backed by a process-wide pool.
+
+    Connection is returned to the pool on exit. Caller is responsible for
+    committing; on exception the connection is rolled back before return.
+
+    Before yielding, the GUC ``app.current_tenant_id`` is set from the
+    request-scoped tenant context (see :mod:`backend.middleware_rls`). This
+    drives the row-level-security policies introduced in migration
+    ``0009_add_rls``: when the GUC is empty the permissive policies let every
+    row through (legacy AUTH_TOKEN flows, scripts, tests), and when it is set
+    the policies filter rows to that tenant as defence in depth underneath
+    the application-layer workspace check. The GUC is cleared again before
+    the connection is handed back to the pool so the next checkout starts
+    from a clean slate even though ``SimpleConnectionPool`` does not reset
+    session state on its own.
+    """
+    # Import locally to avoid a circular import at module load — both
+    # ``middleware_rls`` and ``database`` are imported very early in the
+    # FastAPI app boot path.
+    from .middleware_rls import get_current_tenant
+
+    pool = _get_pool()
+    conn = pool.getconn()
+    tenant_id = get_current_tenant() or ""
     try:
-        yield conn
-    finally:
-        conn.close()
-
-
-def init_db():
-    DB_PATH.parent.mkdir(parents=True, exist_ok=True)
-    with get_db() as conn:
-        conn.executescript("""
-            CREATE TABLE IF NOT EXISTS profiles (
-                id TEXT PRIMARY KEY,
-                name TEXT NOT NULL,
-                fingerprint_seed INTEGER NOT NULL,
-                proxy TEXT,
-                timezone TEXT,
-                locale TEXT,
-                platform TEXT DEFAULT 'windows',
-                user_agent TEXT,
-                screen_width INTEGER DEFAULT 1920,
-                screen_height INTEGER DEFAULT 1080,
-                gpu_vendor TEXT,
-                gpu_renderer TEXT,
-                hardware_concurrency INTEGER,
-                humanize BOOLEAN DEFAULT 0,
-                human_preset TEXT DEFAULT 'default',
-                headless BOOLEAN DEFAULT 0,
-                geoip BOOLEAN DEFAULT 0,
-                clipboard_sync BOOLEAN DEFAULT 1,
-                auto_launch BOOLEAN DEFAULT 0,
-                color_scheme TEXT,
-                notes TEXT,
-                user_data_dir TEXT NOT NULL,
-                created_at TEXT NOT NULL,
-                updated_at TEXT NOT NULL
-            );
-
-            CREATE TABLE IF NOT EXISTS profile_tags (
-                profile_id TEXT REFERENCES profiles(id) ON DELETE CASCADE,
-                tag TEXT NOT NULL,
-                color TEXT,
-                PRIMARY KEY (profile_id, tag)
-            );
-        """)
+        # ``set_config(name, value, is_local)``: ``is_local=false`` means
+        # "session-scoped"; we explicitly reset it below so the lifetime is
+        # in practice request-scoped (we never hold a conn across requests).
+        with conn.cursor() as cur:
+            cur.execute(
+                "SELECT set_config('app.current_tenant_id', %s, false)",
+                (tenant_id,),
+            )
+        # The set_config call above implicitly opens a transaction on the
+        # connection; commit it so the GUC change is durable for this
+        # session but no transaction lingers when the caller starts theirs.
         conn.commit()
+        yield conn
+    except Exception:
+        try:
+            conn.rollback()
+        except Exception:
+            pass
+        raise
+    finally:
+        # Reset before returning to the pool so a subsequent checkout by a
+        # different request (or a script) doesn't inherit our filter.
+        try:
+            with conn.cursor() as cur:
+                cur.execute(
+                    "SELECT set_config('app.current_tenant_id', '', false)"
+                )
+            conn.commit()
+        except Exception:
+            # If reset itself blew up, force-rollback so the connection
+            # isn't returned to the pool in an aborted state.
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+        pool.putconn(conn)
 
-        # Migrations for existing databases
-        cols = {row[1] for row in conn.execute("PRAGMA table_info(profiles)").fetchall()}
-        if "clipboard_sync" not in cols:
-            conn.execute("ALTER TABLE profiles ADD COLUMN clipboard_sync BOOLEAN DEFAULT 1")
-            conn.commit()
-        if "launch_args" not in cols:
-            conn.execute("ALTER TABLE profiles ADD COLUMN launch_args TEXT DEFAULT '[]'")
-            conn.commit()
-        if "auto_launch" not in cols:
-            conn.execute("ALTER TABLE profiles ADD COLUMN auto_launch BOOLEAN DEFAULT 0")
-            conn.commit()
+
+def set_tenant_context(conn, tenant_id: str | None) -> None:
+    """Manually set ``app.current_tenant_id`` on a raw connection.
+
+    Helper for callers that bypass :func:`get_db` (background tasks, ad-hoc
+    scripts) and still want their queries filtered by RLS. Passing ``None``
+    or an empty string disables filtering for that connection.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT set_config('app.current_tenant_id', %s, false)",
+            (tenant_id or "",),
+        )
+
+
+def reset_tenant_context(conn) -> None:
+    """Clear ``app.current_tenant_id`` on a raw connection.
+
+    Symmetric counterpart to :func:`set_tenant_context`. Call this before
+    returning a hand-managed connection to a shared pool to avoid state
+    leaking into the next checkout.
+    """
+    with conn.cursor() as cur:
+        cur.execute(
+            "SELECT set_config('app.current_tenant_id', '', false)"
+        )
+
+
+def init_db() -> None:
+    """Verify the database is reachable. Schema is managed by Alembic."""
+    DATA_DIR.mkdir(parents=True, exist_ok=True)
+    (DATA_DIR / "profiles").mkdir(parents=True, exist_ok=True)
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute("SELECT 1")
+            cur.fetchone()
 
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+class DuplicateProfileName(ValueError):
+    """Raised when create_profile / update_profile would violate the
+    ``ux_profiles_workspace_name`` unique index (migration 0029).
+
+    Subclasses :class:`ValueError` so existing router-layer ``except
+    ValueError`` blocks (e.g. ``routers/proxies.py``) keep working without
+    a code change; routers that want a distinct 409 response can ``except
+    DuplicateProfileName`` first. See heuristic H9.
+    """
+
+
+def _row_to_profile(row: dict[str, Any]) -> dict[str, Any]:
+    profile = dict(row)
+    # launch_args is JSONB → psycopg2 returns a list/dict already; normalize.
+    la = profile.get("launch_args")
+    if la is None:
+        profile["launch_args"] = []
+    elif isinstance(la, str):
+        try:
+            profile["launch_args"] = json.loads(la)
+        except json.JSONDecodeError:
+            profile["launch_args"] = []
+    # Stringify timestamps to ISO for parity with the old SQLite shape.
+    for ts_col in ("created_at", "updated_at"):
+        v = profile.get(ts_col)
+        if isinstance(v, datetime.datetime):
+            profile[ts_col] = v.isoformat()
+    # Stringify id for parity (was TEXT in SQLite).
+    if isinstance(profile.get("id"), uuid.UUID):
+        profile["id"] = str(profile["id"])
+    # workspace_id is UUID-typed in Postgres; psycopg2 returns ``uuid.UUID``
+    # objects which Pydantic/JSON layers downstream don't always like. Mirror
+    # the ``id`` normalisation. ``None`` stays ``None`` for legacy / orphan
+    # profiles (see migration 0005).
+    if isinstance(profile.get("workspace_id"), uuid.UUID):
+        profile["workspace_id"] = str(profile["workspace_id"])
+    # proxy_id (added in migration 0007) is also UUID-typed; mirror the
+    # ``workspace_id`` normalisation so downstream serialisers see a str.
+    if isinstance(profile.get("proxy_id"), uuid.UUID):
+        profile["proxy_id"] = str(profile["proxy_id"])
+    # created_by_user_id (added in migration 0028) records the session user
+    # who created the profile so the route layer can enforce the C7 fix
+    # ("only creator or admin+ can delete"). Stringify for the same reason
+    # as the other UUID columns above.
+    if isinstance(profile.get("created_by_user_id"), uuid.UUID):
+        profile["created_by_user_id"] = str(profile["created_by_user_id"])
+    return profile
+
+
 def create_profile(
     name: str,
     fingerprint_seed: int | None = None,
+    workspace_id: str | None = None,
+    proxy_id: str | None = None,
+    region: str | None = None,
+    created_by_user_id: str | None = None,
     **fields: Any,
 ) -> dict[str, Any]:
     profile_id = str(uuid.uuid4())
@@ -94,92 +230,144 @@ def create_profile(
     user_data_dir = str(DATA_DIR / "profiles" / profile_id)
     now = _now()
     tags = fields.pop("tags", None) or []
+    # Phase 6 (task OOO) — engine selector. Falls back to 'chromium' so any
+    # caller that pre-dates the column (legacy scripts, older API clients)
+    # keeps getting the historical CloakBrowser-patched build.
+    browser_type = fields.get("browser_type") or "chromium"
 
-    with get_db() as conn:
-        conn.execute(
-            """INSERT INTO profiles (
-                id, name, fingerprint_seed, proxy, timezone, locale, platform,
-                user_agent, screen_width, screen_height, gpu_vendor, gpu_renderer,
-                hardware_concurrency, humanize, human_preset, headless, geoip,
-                clipboard_sync, auto_launch, color_scheme, launch_args, notes,
-                user_data_dir, created_at, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)""",
-            (
-                profile_id, name, seed,
-                fields.get("proxy"),
-                fields.get("timezone"),
-                fields.get("locale"),
-                fields.get("platform", "windows"),
-                fields.get("user_agent"),
-                fields.get("screen_width", 1920),
-                fields.get("screen_height", 1080),
-                fields.get("gpu_vendor"),
-                fields.get("gpu_renderer"),
-                fields.get("hardware_concurrency"),
-                fields.get("humanize", False),
-                fields.get("human_preset", "default"),
-                fields.get("headless", False),
-                fields.get("geoip", False),
-                fields.get("clipboard_sync", True),
-                fields.get("auto_launch", False),
-                fields.get("color_scheme"),
-                json.dumps(fields.get("launch_args") or []),
-                fields.get("notes"),
-                user_data_dir, now, now,
-            ),
-        )
-        for t in tags:
-            conn.execute(
-                "INSERT INTO profile_tags (profile_id, tag, color) VALUES (?, ?, ?)",
-                (profile_id, t["tag"], t.get("color")),
-            )
-        conn.commit()
+    try:
+        with get_db() as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """INSERT INTO profiles (
+                        id, name, fingerprint_seed, proxy, timezone, locale, platform,
+                        user_agent, screen_width, screen_height, gpu_vendor, gpu_renderer,
+                        hardware_concurrency, humanize, human_preset, headless, geoip,
+                        clipboard_sync, auto_launch, color_scheme, launch_args, notes,
+                        user_data_dir, workspace_id, proxy_id, region, browser_type,
+                        created_by_user_id, created_at, updated_at
+                    ) VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s,
+                              %s, %s, %s, %s, %s, %s::jsonb, %s, %s, %s, %s, %s, %s, %s, %s, %s)""",
+                    (
+                        profile_id, name, seed,
+                        fields.get("proxy"),
+                        fields.get("timezone"),
+                        fields.get("locale"),
+                        fields.get("platform", "windows"),
+                        fields.get("user_agent"),
+                        fields.get("screen_width", 1920),
+                        fields.get("screen_height", 1080),
+                        fields.get("gpu_vendor"),
+                        fields.get("gpu_renderer"),
+                        fields.get("hardware_concurrency"),
+                        bool(fields.get("humanize", False)),
+                        fields.get("human_preset", "default"),
+                        bool(fields.get("headless", False)),
+                        bool(fields.get("geoip", False)),
+                        bool(fields.get("clipboard_sync", True)),
+                        bool(fields.get("auto_launch", False)),
+                        fields.get("color_scheme"),
+                        json.dumps(fields.get("launch_args") or []),
+                        fields.get("notes"),
+                        user_data_dir, workspace_id, proxy_id, region, browser_type,
+                        created_by_user_id, now, now,
+                    ),
+                )
+                for t in tags:
+                    cur.execute(
+                        "INSERT INTO profile_tags (profile_id, tag, color) VALUES (%s, %s, %s)",
+                        (profile_id, t["tag"], t.get("color")),
+                    )
+            conn.commit()
+    except psycopg2.errors.UniqueViolation as exc:
+        # H9 — workspace-scoped duplicate name guard (migration 0029).
+        # We inspect the message rather than ``diag.constraint_name`` to stay
+        # robust against psycopg2 versions that don't surface it cleanly.
+        if "ux_profiles_workspace_name" in str(exc):
+            raise DuplicateProfileName(
+                f"A profile named {name!r} already exists in this workspace"
+            ) from exc
+        raise
 
     return get_profile(profile_id)  # type: ignore[return-value]
 
 
 def get_profile(profile_id: str) -> dict[str, Any] | None:
+    try:
+        uuid.UUID(str(profile_id))
+    except (ValueError, AttributeError, TypeError):
+        return None
     with get_db() as conn:
-        row = conn.execute("SELECT * FROM profiles WHERE id = ?", (profile_id,)).fetchone()
-        if not row:
-            return None
-        profile = dict(row)
-        profile["launch_args"] = json.loads(profile.get("launch_args") or "[]")
-        tags = conn.execute(
-            "SELECT tag, color FROM profile_tags WHERE profile_id = ?",
-            (profile_id,),
-        ).fetchall()
-        profile["tags"] = [dict(t) for t in tags]
-        return profile
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute("SELECT * FROM profiles WHERE id = %s", (profile_id,))
+            row = cur.fetchone()
+            if not row:
+                return None
+            profile = _row_to_profile(row)
+            cur.execute(
+                "SELECT tag, color FROM profile_tags WHERE profile_id = %s",
+                (profile_id,),
+            )
+            profile["tags"] = [dict(t) for t in cur.fetchall()]
+            return profile
 
 
-def list_profiles() -> list[dict[str, Any]]:
+def list_profiles(
+    workspace_ids: list[str] | None = None,
+) -> list[dict[str, Any]]:
+    """List profiles, optionally scoped to a set of workspace ids.
+
+    ``workspace_ids`` semantics — chosen so legacy / unauth call sites keep
+    working without thinking about workspaces:
+
+    * ``None``  → no filter at all; return every row (legacy AUTH_TOKEN
+      mode, test suite, scripts hitting the API without a session).
+    * ``[]``    → user has zero workspaces → return ``[]``. We short-circuit
+      to avoid emitting a ``WHERE workspace_id IN ()`` which is invalid SQL.
+    * non-empty list → ``WHERE workspace_id IN (...)``. Profiles whose
+      ``workspace_id`` is ``NULL`` (orphans / legacy) are deliberately
+      excluded — a workspace member must not see un-scoped profiles.
+    """
+    if workspace_ids is not None and len(workspace_ids) == 0:
+        return []
     with get_db() as conn:
-        rows = conn.execute("SELECT * FROM profiles ORDER BY created_at DESC").fetchall()
-        profiles = []
-        for row in rows:
-            profile = dict(row)
-            profile["launch_args"] = json.loads(profile.get("launch_args") or "[]")
-            tags = conn.execute(
-                "SELECT tag, color FROM profile_tags WHERE profile_id = ?",
-                (profile["id"],),
-            ).fetchall()
-            profile["tags"] = [dict(t) for t in tags]
-            profiles.append(profile)
-        return profiles
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            if workspace_ids is None:
+                cur.execute("SELECT * FROM profiles ORDER BY created_at DESC")
+            else:
+                cur.execute(
+                    "SELECT * FROM profiles WHERE workspace_id = ANY(%s::uuid[]) "
+                    "ORDER BY created_at DESC",
+                    (list(workspace_ids),),
+                )
+            rows = cur.fetchall()
+            profiles: list[dict[str, Any]] = []
+            for row in rows:
+                profile = _row_to_profile(row)
+                cur.execute(
+                    "SELECT tag, color FROM profile_tags WHERE profile_id = %s",
+                    (profile["id"],),
+                )
+                profile["tags"] = [dict(t) for t in cur.fetchall()]
+                profiles.append(profile)
+            return profiles
 
 
 def update_profile(profile_id: str, **fields: Any) -> dict[str, Any] | None:
+    try:
+        uuid.UUID(str(profile_id))
+    except (ValueError, AttributeError, TypeError):
+        return None
     existing = get_profile(profile_id)
     if not existing:
         return None
 
     tags = fields.pop("tags", None)
 
-    # Only update fields that were explicitly provided
-    update_cols = []
-    update_vals = []
-    # Pre-serialize launch_args to JSON before the generic update loop
+    update_cols: list[str] = []
+    update_vals: list[Any] = []
+
+    # launch_args is JSONB; cast explicitly.
     if "launch_args" in fields:
         fields["launch_args"] = json.dumps(fields["launch_args"] or [])
 
@@ -188,37 +376,212 @@ def update_profile(profile_id: str, **fields: Any) -> dict[str, Any] | None:
         "user_agent", "screen_width", "screen_height", "gpu_vendor", "gpu_renderer",
         "hardware_concurrency", "humanize", "human_preset", "headless", "geoip",
         "clipboard_sync", "auto_launch", "color_scheme", "launch_args", "notes",
+        "workspace_id", "proxy_id", "region", "browser_type",
     ):
         if col in fields:
-            update_cols.append(f"{col} = ?")
+            if col == "launch_args":
+                update_cols.append(f"{col} = %s::jsonb")
+            else:
+                update_cols.append(f"{col} = %s")
             update_vals.append(fields[col])
 
     if update_cols:
-        update_cols.append("updated_at = ?")
+        update_cols.append("updated_at = %s")
         update_vals.append(_now())
         update_vals.append(profile_id)
-        with get_db() as conn:
-            conn.execute(
-                f"UPDATE profiles SET {', '.join(update_cols)} WHERE id = ?",
-                update_vals,
-            )
-            conn.commit()
+        try:
+            with get_db() as conn:
+                with conn.cursor() as cur:
+                    cur.execute(
+                        f"UPDATE profiles SET {', '.join(update_cols)} WHERE id = %s",
+                        update_vals,
+                    )
+                conn.commit()
+        except psycopg2.errors.UniqueViolation as exc:
+            # H9 — same guard applies to rename via update.
+            if "ux_profiles_workspace_name" in str(exc):
+                raise DuplicateProfileName(
+                    f"A profile named {fields.get('name')!r} already exists "
+                    "in this workspace"
+                ) from exc
+            raise
 
     if tags is not None:
         with get_db() as conn:
-            conn.execute("DELETE FROM profile_tags WHERE profile_id = ?", (profile_id,))
-            for t in tags:
-                conn.execute(
-                    "INSERT INTO profile_tags (profile_id, tag, color) VALUES (?, ?, ?)",
-                    (profile_id, t["tag"], t.get("color")),
-                )
+            with conn.cursor() as cur:
+                cur.execute("DELETE FROM profile_tags WHERE profile_id = %s", (profile_id,))
+                for t in tags:
+                    cur.execute(
+                        "INSERT INTO profile_tags (profile_id, tag, color) VALUES (%s, %s, %s)",
+                        (profile_id, t["tag"], t.get("color")),
+                    )
             conn.commit()
 
     return get_profile(profile_id)
 
 
 def delete_profile(profile_id: str) -> bool:
+    try:
+        uuid.UUID(str(profile_id))
+    except (ValueError, AttributeError, TypeError):
+        return False
     with get_db() as conn:
-        cursor = conn.execute("DELETE FROM profiles WHERE id = ?", (profile_id,))
+        with conn.cursor() as cur:
+            cur.execute("DELETE FROM profiles WHERE id = %s", (profile_id,))
+            rowcount = cur.rowcount
         conn.commit()
-        return cursor.rowcount > 0
+        return rowcount > 0
+
+
+# ---------------------------------------------------------------------------
+# profile_sessions
+#
+# Persistent record of every browser launch. Replaces ``BrowserManager.running``
+# as the source of truth for "is profile X currently active?" — the in-memory
+# dict is now just a cache for process handles. See docs/ARCHITECTURE §2.2.
+# ---------------------------------------------------------------------------
+
+
+def _row_to_session(row: dict[str, Any]) -> dict[str, Any]:
+    session = dict(row)
+    if isinstance(session.get("id"), uuid.UUID):
+        session["id"] = str(session["id"])
+    if isinstance(session.get("profile_id"), uuid.UUID):
+        session["profile_id"] = str(session["profile_id"])
+    for ts_col in ("started_at", "ended_at"):
+        v = session.get(ts_col)
+        if isinstance(v, datetime.datetime):
+            session[ts_col] = v.isoformat()
+    return session
+
+
+def create_session(
+    profile_id: str,
+    display_num: int | None = None,
+    ws_port: int | None = None,
+    cdp_port: int | None = None,
+    worker_id: str = "local",
+) -> dict[str, Any]:
+    """Insert a new session row with status='starting'.
+
+    The partial unique index ``ux_profile_sessions_one_active`` raises
+    ``psycopg2.errors.UniqueViolation`` if another active session for this
+    profile already exists.
+    """
+    session_id = str(uuid.uuid4())
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """INSERT INTO profile_sessions (
+                    id, profile_id, worker_id, status,
+                    display_num, ws_port, cdp_port
+                ) VALUES (%s, %s, %s, 'starting', %s, %s, %s)
+                RETURNING *""",
+                (session_id, profile_id, worker_id, display_num, ws_port, cdp_port),
+            )
+            row = cur.fetchone()
+        conn.commit()
+    return _row_to_session(row)
+
+
+def mark_session_running(session_id: str) -> None:
+    """Transition a session from 'starting' to 'running'."""
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                "UPDATE profile_sessions SET status = 'running' WHERE id = %s",
+                (session_id,),
+            )
+        conn.commit()
+
+
+def end_session(
+    session_id: str,
+    status: str = "stopped",
+    error_message: str | None = None,
+) -> None:
+    """Mark a session as ended. ``status`` should be 'stopped' or 'crashed'.
+
+    Idempotent — repeated calls on an already-ended session are a no-op
+    (``ended_at`` is preserved).
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE profile_sessions
+                   SET status = %s,
+                       ended_at = now(),
+                       error_message = COALESCE(%s, error_message)
+                   WHERE id = %s AND ended_at IS NULL""",
+                (status, error_message, session_id),
+            )
+        conn.commit()
+
+
+def get_active_session_for_profile(profile_id: str) -> dict[str, Any] | None:
+    """Return the current active (``ended_at IS NULL``) session for a profile."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM profile_sessions
+                   WHERE profile_id = %s AND ended_at IS NULL
+                   LIMIT 1""",
+                (profile_id,),
+            )
+            row = cur.fetchone()
+            return _row_to_session(row) if row else None
+
+
+def list_active_sessions() -> list[dict[str, Any]]:
+    """List every session with ``ended_at IS NULL``. Used for startup recovery."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM profile_sessions
+                   WHERE ended_at IS NULL
+                   ORDER BY started_at ASC"""
+            )
+            return [_row_to_session(r) for r in cur.fetchall()]
+
+
+def list_long_running_sessions(min_age_seconds: int) -> list[dict[str, Any]]:
+    """Return active (``ended_at IS NULL``) sessions whose ``started_at`` is
+    older than ``min_age_seconds``. Used by :mod:`backend.idle_reaper` to
+    enforce the Phase 3 hard 30-minute browser time-limit."""
+    with get_db() as conn:
+        with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cur:
+            cur.execute(
+                """SELECT * FROM profile_sessions
+                   WHERE ended_at IS NULL
+                     AND started_at < now() - make_interval(secs => %s)
+                   ORDER BY started_at
+                   LIMIT 100""",
+                (min_age_seconds,),
+            )
+            return [_row_to_session(r) for r in cur.fetchall()]
+
+
+def cleanup_stale_sessions() -> int:
+    """Mark every active session as crashed.
+
+    Called on container/server startup: any session row left active across a
+    restart is by definition orphaned, because the process that owned it has
+    been killed.
+
+    Returns the number of rows updated.
+    """
+    with get_db() as conn:
+        with conn.cursor() as cur:
+            cur.execute(
+                """UPDATE profile_sessions
+                   SET status = 'crashed',
+                       ended_at = now(),
+                       error_message = COALESCE(
+                           error_message,
+                           'process killed by server restart'
+                       )
+                   WHERE ended_at IS NULL"""
+            )
+            count = cur.rowcount
+        conn.commit()
+        return count

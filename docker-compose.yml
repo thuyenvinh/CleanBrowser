@@ -1,4 +1,25 @@
+# IMPORTANT: required env vars (security review H-01/H-02/H-07):
+#   POSTGRES_PASSWORD  — DB password, no default; copy .env.example to .env
+#   JWT_SECRET         — 32+ chars random; backend refuses to start in
+#                        APP_ENV=production without it
+#   COOKIE_SECURE      — set "true" behind HTTPS in production
+#   AUTH_TOKEN         — optional legacy single-token guard; if you rely on
+#                        JWT_SECRET alone this can stay unset
 services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: cleanbrowser
+      POSTGRES_USER: cleanbrowser
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cleanbrowser"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
   manager:
     build: .
     ports:
@@ -6,4 +27,15 @@ services:
     volumes:
       - ~/.cloakbrowser-manager:/data
     environment:
+      - APP_ENV=${APP_ENV:-development}
       - AUTH_TOKEN=${AUTH_TOKEN:-}
+      - JWT_SECRET=${JWT_SECRET:?JWT_SECRET must be set (use python -c "import secrets;print(secrets.token_urlsafe(48))")}
+      - COOKIE_SECURE=${COOKIE_SECURE:-false}
+      - DATABASE_URL=postgresql://cleanbrowser:${POSTGRES_PASSWORD}@postgres:5432/cleanbrowser
+      - PROXY_ENCRYPTION_KEY=${PROXY_ENCRYPTION_KEY:-}
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+volumes:
+  postgres_data:

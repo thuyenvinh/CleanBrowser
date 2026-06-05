@@ -1,0 +1,101 @@
+import { useEffect, useRef, useState } from "react";
+import { Check, ChevronDown, Layers, Settings } from "lucide-react";
+import type { Workspace } from "../lib/auth";
+import { WorkspaceSettingsPage } from "./WorkspaceSettingsPage";
+
+interface WorkspaceSelectorProps {
+  workspaces: Workspace[];
+  currentWorkspaceId: string | null;
+  onSwitch: (id: string) => void;
+}
+
+export function WorkspaceSelector({
+  workspaces,
+  currentWorkspaceId,
+  onSwitch,
+}: WorkspaceSelectorProps) {
+  const [open, setOpen] = useState(false);
+  const [settingsOpen, setSettingsOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handleClick = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) {
+        setOpen(false);
+      }
+    };
+    document.addEventListener("mousedown", handleClick);
+    return () => document.removeEventListener("mousedown", handleClick);
+  }, [open]);
+
+  // Nothing to render until the auth bootstrap has fetched the workspace
+  // list — avoids flashing a stale placeholder. All hooks must be called
+  // before this early return.
+  if (workspaces.length === 0) return null;
+  const current: Workspace =
+    workspaces.find((w) => w.id === currentWorkspaceId) ?? workspaces[0]!;
+
+  return (
+    <>
+      <div className="relative flex items-center gap-1" ref={ref}>
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          className="flex items-center gap-2 h-7 px-2 rounded-md bg-surface-2 hover:bg-surface-3 border border-border text-xs text-gray-200"
+          title="Switch workspace"
+        >
+          <Layers className="h-3.5 w-3.5 text-gray-500" />
+          <span className="truncate max-w-[10rem]">{current.name}</span>
+          <ChevronDown className="h-3 w-3 text-gray-500" />
+        </button>
+        <button
+          type="button"
+          onClick={() => setSettingsOpen(true)}
+          title="Workspace settings"
+          aria-label="Workspace settings"
+          className="h-7 w-7 inline-flex items-center justify-center rounded-md bg-surface-2 hover:bg-surface-3 border border-border text-gray-400 hover:text-gray-200"
+        >
+          <Settings className="h-3.5 w-3.5" />
+        </button>
+        {open && (
+          <div className="absolute right-0 top-full mt-1 w-56 rounded-md bg-surface-2 border border-border shadow-sm z-20 py-1">
+            <div className="px-3 py-1 text-[10px] uppercase tracking-wide text-gray-500">
+              Workspaces
+            </div>
+            {workspaces.map((w) => {
+              const active = w.id === current.id;
+              return (
+                <button
+                  key={w.id}
+                  type="button"
+                  onClick={() => {
+                    onSwitch(w.id);
+                    setOpen(false);
+                  }}
+                  className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs text-gray-200 hover:bg-surface-3"
+                >
+                  <span className="truncate">{w.name}</span>
+                  {active && <Check className="h-3.5 w-3.5 text-accent" />}
+                </button>
+              );
+            })}
+          </div>
+        )}
+      </div>
+      {settingsOpen && (
+        <WorkspaceSettingsPage
+          workspace={current}
+          onChanged={() => {
+            // Rename / delete invalidate the workspace list in useAuth, but
+            // we can't reach that hook from here without touching App.tsx —
+            // a full reload picks up the new name and routes the user to a
+            // surviving workspace if the current one was deleted.
+            window.location.reload();
+          }}
+          onClose={() => setSettingsOpen(false)}
+        />
+      )}
+    </>
+  );
+}

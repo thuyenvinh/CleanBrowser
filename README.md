@@ -56,22 +56,40 @@ Each CloakBrowser profile generates a completely different device identity. To t
 
 ## Features
 
+### Core (single-user / local)
 - **Profile management** — create, edit, delete browser profiles with unique fingerprints
 - **Per-profile settings** — fingerprint seed, proxy, timezone, locale, user agent, screen size, platform
-- **One-click launch/stop** — each profile runs as an isolated CloakBrowser instance
+- **Dual-core engine** — Chromium (CloakBrowser stealth) or Firefox per profile
+- **One-click launch/stop** — each profile runs as an isolated process
 - **Session persistence** — cookies, localStorage, and cache survive browser restarts
-- **In-browser viewing** — interact with launched browsers via noVNC, directly in the web GUI
-- **Playwright/Puppeteer API** — connect to any running profile programmatically via CDP, while still watching it live in the browser
-- **Optional authentication** — protect the web UI and API with a single token, or run wide open locally
-- **Powered by CloakBrowser** — 32 source-level C++ patches, passes Cloudflare Turnstile, 0.9 reCAPTCHA v3 score
+- **In-browser viewing** — interact with launched browsers via noVNC
+- **Playwright/Puppeteer API** — connect to any running profile programmatically via CDP
+
+### Multi-tenant SaaS (Phase 1–6)
+- **Tenants + workspaces + 5-role RBAC** — owner / admin / editor / launcher / viewer; enforced on HTTP and VNC/CDP WebSocket
+- **Auth** — email + password (Argon2id), MFA TOTP, OAuth Google + GitHub, email verification, JWT sessions
+- **Postgres + Row-Level Security** — RESTRICTIVE policies on 9 tenant-scoped tables, with a `__system__` bypass for workers
+- **Audit log** — automatic capture of mutation endpoints (who / what / when / IP / UA)
+- **Proxy pool** — encrypted credentials (Fernet), 5 provider adapters (manual / 911 / BrightData / Smartproxy / IPRoyal), bulk CSV import, GeoIP detection, background health-check every 5 min
+- **Cloud sync** — S3 / MinIO snapshot of `user_data_dir` on stop (tar+zstd), `profile_versions` history with restore + presigned URL, region selector
+- **Automation engine** — no-code DSL with React Flow visual editor (10 node types), cron scheduler (60s tick), background run executor over CDP, AI-assisted flow builder (Anthropic Claude)
+- **Marketplace** — public app catalog with one-click install (clones DSL into your workspace)
+- **Billing** — Stripe checkout + customer portal, VNPay (Vietnam) one-time payment, plan-based quotas enforced on `create_profile` / `launch` / `invite_member` / `run_automation`, invoice history
+- **Idle reaper** — auto-stops browsers idle for 30 min to save RAM
+- **Worker abstraction** — `Worker` Protocol + `LocalWorker` impl, ready to swap for remote workers (gRPC/NATS) in a future release
+- **Desktop client** — Electron scaffold (`desktop/`) for Windows / macOS / Linux
 
 ## Stack
 
-- **Backend**: FastAPI (Python)
-- **Frontend**: React + Tailwind CSS
-- **Browser viewer**: noVNC (WebSocket-based VNC client)
-- **Database**: SQLite
-- **Browser engine**: [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) (stealth Chromium binary)
+- **Backend**: FastAPI + Postgres 16 (RLS) + Alembic + Redis-free in-process queues
+- **Frontend**: React 19 + Vite + Tailwind CSS + React Flow + noVNC
+- **Browser engine**: [CloakBrowser](https://github.com/CloakHQ/CloakBrowser) (stealth Chromium) + Firefox via Playwright
+- **Storage**: S3-compatible (AWS S3 / MinIO / Wasabi) for snapshots, Postgres for state
+- **Payments**: Stripe + VNPay
+- **AI**: Anthropic Claude (configurable model)
+- **Observability**: ready for OpenTelemetry (next phase)
+
+See [docs/SETUP.md](docs/SETUP.md) for Linux/Mac quickstart + VPS deploy, [docs/SETUP_WINDOWS.md](docs/SETUP_WINDOWS.md) for Windows (Docker Desktop + WSL2), [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md) for the design, and [docs/DEPLOYMENT.md](docs/DEPLOYMENT.md) for the full env-var reference.
 
 ## Development
 

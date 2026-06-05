@@ -1,0 +1,26 @@
+{
+  "name": "cleanbrowser-desktop",
+  "version": "0.1.0",
+  "description": "CleanBrowser desktop wrapper (Electron)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "electron-builder",
+    "build:win": "electron-builder --win",
+    "build:mac": "electron-builder --mac",
+    "build:linux": "electron-builder --linux"
+  },
+  "devDependencies": {
+    "electron": "^31.0.0",
+    "electron-builder": "^25.0.0"
+  },
+  "build": {
+    "appId": "com.cleanbrowser.desktop",
+    "productName": "CleanBrowser",
+    "directories": { "output": "dist" },
+    "files": ["main.js", "preload.js", "package.json", "assets/**/*"],
+    "mac": { "category": "public.app-category.productivity" },
+    "win": { "target": "nsis" },
+    "linux": { "target": "AppImage" }
+  }
+}

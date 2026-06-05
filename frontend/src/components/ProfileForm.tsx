@@ -1,6 +1,8 @@
 import { Save, Trash2, X } from "lucide-react";
 import { useEffect, useState } from "react";
 import type { Profile, ProfileCreateData } from "../lib/api";
+import { type Region, regionsApi } from "../lib/regions";
+import { ProfileVersionHistory } from "./ProfileVersionHistory";
 
 interface ProfileFormProps {
   profile: Profile | null; // null = create mode
@@ -58,6 +60,7 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
   const [form, setForm] = useState<ProfileCreateData>({
     name: "",
     platform: "windows",
+    browser_type: "chromium",
     screen_width: 1920,
     screen_height: 1080,
     humanize: false,
@@ -75,6 +78,11 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
   const [tagInput, setTagInput] = useState("");
   const [tagColor, setTagColor] = useState<string | null>("#6366f1");
   const [launchArgInput, setLaunchArgInput] = useState("");
+  const [regions, setRegions] = useState<Region[]>([]);
+
+  useEffect(() => {
+    regionsApi.list().then((r) => setRegions(r.regions)).catch(() => setRegions([]));
+  }, []);
 
   useEffect(() => {
     if (profile) {
@@ -100,6 +108,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
         color_scheme: profile.color_scheme,
         launch_args: profile.launch_args ?? [],
         notes: profile.notes,
+        region: profile.region,
+        browser_type: profile.browser_type,
         tags: profile.tags ?? [],
       });
     }
@@ -207,8 +217,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Basic</h3>
           <div className="grid grid-cols-2 gap-3">
             <div className="col-span-2">
-              <label className="label">Profile Name</label>
-              <input
+              <label className="label" htmlFor="pf-profile-name-1">Profile Name</label>
+              <input id="pf-profile-name-1"
                 className="input"
                 value={form.name}
                 onChange={(e) => set("name", e.target.value)}
@@ -217,8 +227,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
               />
             </div>
             <div>
-              <label className="label">Platform</label>
-              <select
+              <label className="label" htmlFor="pf-platform-2">Platform</label>
+              <select id="pf-platform-2"
                 className="input"
                 value={form.platform}
                 onChange={(e) => set("platform", e.target.value)}
@@ -226,6 +236,17 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
                 <option value="windows">Windows</option>
                 <option value="macos">macOS</option>
                 <option value="linux">Linux</option>
+              </select>
+            </div>
+            <div>
+              <label className="label" htmlFor="pf-browser-engine-3">Browser engine</label>
+              <select id="pf-browser-engine-3"
+                className="input"
+                value={form.browser_type ?? "chromium"}
+                onChange={(e) => set("browser_type", e.target.value)}
+              >
+                <option value="chromium">Chromium (CloakBrowser — stealth)</option>
+                <option value="firefox">Firefox</option>
               </select>
             </div>
             <div>
@@ -279,8 +300,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Network</h3>
           <div className="space-y-3">
             <div>
-              <label className="label">Proxy</label>
-              <input
+              <label className="label" htmlFor="pf-proxy-4">Proxy</label>
+              <input id="pf-proxy-4"
                 className="input"
                 value={form.proxy ?? ""}
                 onChange={(e) => set("proxy", e.target.value || null)}
@@ -289,8 +310,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
             </div>
             <div className="grid grid-cols-2 gap-3">
               <div>
-                <label className="label">Timezone</label>
-                <input
+                <label className="label" htmlFor="pf-timezone-5">Timezone</label>
+              <input id="pf-timezone-5"
                   className="input"
                   value={form.timezone ?? ""}
                   onChange={(e) => set("timezone", e.target.value || null)}
@@ -298,8 +319,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
                 />
               </div>
               <div>
-                <label className="label">Locale</label>
-                <input
+                <label className="label" htmlFor="pf-locale-6">Locale</label>
+              <input id="pf-locale-6"
                   className="input"
                   value={form.locale ?? ""}
                   onChange={(e) => set("locale", e.target.value || null)}
@@ -316,6 +337,19 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
               />
               Auto-detect timezone/locale from proxy IP (GeoIP)
             </label>
+            <div>
+              <label className="label" htmlFor="pf-region-7">Region</label>
+              <select id="pf-region-7"
+                className="input"
+                value={form.region ?? ""}
+                onChange={(e) => set("region", e.target.value || null)}
+              >
+                <option value="">Inherit from workspace</option>
+                {regions.map((r) => (
+                  <option key={r.code} value={r.code}>{r.label}</option>
+                ))}
+              </select>
+            </div>
           </div>
         </section>
 
@@ -324,8 +358,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
           <h3 className="text-xs font-semibold text-gray-400 uppercase tracking-wider mb-3">Hardware</h3>
           <div className="space-y-3">
             <div>
-              <label className="label">Screen Resolution</label>
-              <select
+              <label className="label" htmlFor="pf-screen-resolution-8">Screen Resolution</label>
+              <select id="pf-screen-resolution-8"
                 className="input"
                 value={currentResolution}
                 onChange={(e) => {
@@ -345,8 +379,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
             {currentResolution === "custom" && (
               <div className="grid grid-cols-2 gap-3">
                 <div>
-                  <label className="label">Width</label>
-                  <input
+                  <label className="label" htmlFor="pf-width-9">Width</label>
+              <input id="pf-width-9"
                     className="input"
                     type="number"
                     value={form.screen_width ?? 1920}
@@ -354,8 +388,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
                   />
                 </div>
                 <div>
-                  <label className="label">Height</label>
-                  <input
+                  <label className="label" htmlFor="pf-height-10">Height</label>
+              <input id="pf-height-10"
                     className="input"
                     type="number"
                     value={form.screen_height ?? 1080}
@@ -365,8 +399,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
               </div>
             )}
             <div>
-              <label className="label">Hardware Concurrency</label>
-              <input
+              <label className="label" htmlFor="pf-hardware-concurrency-11">Hardware Concurrency</label>
+              <input id="pf-hardware-concurrency-11"
                 className="input"
                 type="number"
                 value={form.hardware_concurrency ?? ""}
@@ -375,8 +409,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
               />
             </div>
             <div>
-              <label className="label">GPU Preset</label>
-              <select
+              <label className="label" htmlFor="pf-gpu-preset-12">GPU Preset</label>
+              <select id="pf-gpu-preset-12"
                 className="input"
                 value=""
                 onChange={(e) => {
@@ -390,8 +424,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
               </select>
             </div>
             <div>
-              <label className="label">GPU Vendor</label>
-              <input
+              <label className="label" htmlFor="pf-gpu-vendor-13">GPU Vendor</label>
+              <input id="pf-gpu-vendor-13"
                 className="input"
                 value={form.gpu_vendor ?? ""}
                 onChange={(e) => set("gpu_vendor", e.target.value || null)}
@@ -399,8 +433,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
               />
             </div>
             <div>
-              <label className="label">GPU Renderer</label>
-              <input
+              <label className="label" htmlFor="pf-gpu-renderer-14">GPU Renderer</label>
+              <input id="pf-gpu-renderer-14"
                 className="input"
                 value={form.gpu_renderer ?? ""}
                 onChange={(e) => set("gpu_renderer", e.target.value || null)}
@@ -425,8 +459,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
             </label>
             {form.humanize && (
               <div>
-                <label className="label">Human Preset</label>
-                <select
+                <label className="label" htmlFor="pf-human-preset-15">Human Preset</label>
+              <select id="pf-human-preset-15"
                   className="input"
                   value={form.human_preset}
                   onChange={(e) => set("human_preset", e.target.value)}
@@ -455,8 +489,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
               Launch automatically when container starts
             </label>
             <div>
-              <label className="label">Color Scheme</label>
-              <select
+              <label className="label" htmlFor="pf-color-scheme-16">Color Scheme</label>
+              <select id="pf-color-scheme-16"
                 className="input"
                 value={form.color_scheme ?? ""}
                 onChange={(e) => set("color_scheme", e.target.value || null)}
@@ -468,8 +502,8 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
               </select>
             </div>
             <div>
-              <label className="label">User Agent</label>
-              <input
+              <label className="label" htmlFor="pf-user-agent-17">User Agent</label>
+              <input id="pf-user-agent-17"
                 className="input"
                 value={form.user_agent ?? ""}
                 onChange={(e) => set("user_agent", e.target.value || null)}
@@ -578,6 +612,13 @@ export function ProfileForm({ profile, onSave, onDelete, onCancel }: ProfileForm
             placeholder="Optional notes about this profile..."
           />
         </section>
+
+        {/* Storage / Versions (edit mode only) */}
+        {profile && (
+          <section className="mt-6 pt-6 border-t border-border">
+            <ProfileVersionHistory profileId={profile.id} />
+          </section>
+        )}
       </div>
 
     </form>

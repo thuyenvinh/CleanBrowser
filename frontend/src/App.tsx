@@ -1,6 +1,7 @@
 import { useState, useCallback, useEffect } from "react";
-import { Lock, PanelLeftClose, PanelLeft } from "lucide-react";
+import { Lock, PanelLeftClose, PanelLeft, Server, Globe, Workflow, CreditCard, Package, Shield } from "lucide-react";
 import { useProfiles } from "./hooks/useProfiles";
+import { useAuth } from "./hooks/useAuth";
 import { api, setOnUnauthorized, type ProfileCreateData } from "./lib/api";
 import { ProfileList } from "./components/ProfileList";
 import { ProfileForm } from "./components/ProfileForm";
@@ -8,13 +9,90 @@ import { ProfileViewer } from "./components/ProfileViewer";
 import { LaunchButton } from "./components/LaunchButton";
 import { StatusIndicator } from "./components/StatusIndicator";
 import { LoginPage } from "./components/LoginPage";
+import { SignupPage } from "./components/SignupPage";
+import { ForgotPasswordPage } from "./components/ForgotPasswordPage";
+import { ResetPasswordPage } from "./components/ResetPasswordPage";
+import { PricingPage } from "./components/PricingPage";
+import { WorkspaceSelector } from "./components/WorkspaceSelector";
+import { ProxyPage } from "./components/ProxyPage";
+import { AutomationPage } from "./components/AutomationPage";
+import { BillingPage } from "./components/BillingPage";
+import { MarketplacePage } from "./components/MarketplacePage";
+import { EmailVerificationBanner } from "./components/EmailVerificationBanner";
+import { TrialCountdownBanner } from "./components/TrialCountdownBanner";
+import { StatusPage } from "./components/StatusPage";
+import { ApiKeysPage } from "./components/ApiKeysPage";
 
 type AuthState = "checking" | "required" | "ok" | "error";
 type View = "empty" | "create" | "edit" | "view";
+type AuthView = "login" | "signup" | "pricing" | "forgot";
+type Tab = "profiles" | "proxies" | "automations" | "marketplace" | "billing" | "apikeys";
+
+// Public ``/status`` route is evaluated once at module-load before any
+// hooks run — keeps unauthenticated visitors out of the auth state
+// machine entirely and complies with the rules-of-hooks (we cannot
+// early-return from ``App`` after the first ``useState`` call).
+const IS_PUBLIC_STATUS_ROUTE =
+  typeof window !== "undefined" && window.location.pathname === "/status";
+
+// Same trick for the reset-password landing page: the email link points at
+// ``/reset-password?token=…`` and must render BEFORE any auth state machine
+// runs — otherwise an unauthenticated user clicking the link gets bounced
+// to /login instead of the reset form. We accept either the path
+// ``/reset-password`` OR the query flag ``?reset=1`` so static hosts that
+// can't add an SPA fallback route still work.
+const RESET_PASSWORD_TOKEN: string | null = (() => {
+  if (typeof window === "undefined") return null;
+  try {
+    const onPath = window.location.pathname === "/reset-password";
+    const params = new URLSearchParams(window.location.search);
+    const flag = params.get("reset") === "1";
+    if (!onPath && !flag) return null;
+    return params.get("token") ?? "";
+  } catch {
+    return null;
+  }
+})();
 
 export default function App() {
+  if (IS_PUBLIC_STATUS_ROUTE) {
+    return <StatusPage />;
+  }
+
+  if (RESET_PASSWORD_TOKEN !== null) {
+    const leaveResetFlow = () => {
+      try {
+        window.history.replaceState({}, "", "/");
+      } catch {
+        /* no-op in non-browser test envs */
+      }
+      // Hard navigation so the App component re-evaluates the module-level
+      // ``RESET_PASSWORD_TOKEN`` snapshot against the cleaned URL.
+      window.location.assign("/");
+    };
+    return (
+      <ResetPasswordPage
+        token={RESET_PASSWORD_TOKEN}
+        onSuccess={leaveResetFlow}
+        onCancel={leaveResetFlow}
+      />
+    );
+  }
+
   const [authState, setAuthState] = useState<AuthState>("checking");
   const [authRequired, setAuthRequired] = useState(false);
+  // Initial auth view: if the URL carries ``?pricing=1`` show the marketing
+  // pricing page first; otherwise default to the login form.
+  const [authView, setAuthView] = useState<AuthView>(() => {
+    try {
+      return new URLSearchParams(window.location.search).get("pricing")
+        ? "pricing"
+        : "login";
+    } catch {
+      return "login";
+    }
+  });
+  const authCtx = useAuth();
 
   useEffect(() => {
     setOnUnauthorized(() => setAuthState("required"));
@@ -35,6 +113,11 @@ export default function App() {
 
     return () => setOnUnauthorized(null);
   }, []);
+
+  // When useAuth confirms a multi-tenant session, mark auth ok.
+  useEffect(() => {
+    if (authCtx.user) setAuthState("ok");
+  }, [authCtx.user]);
 
   if (authState === "checking") {
     return (
@@ -69,14 +152,69 @@ export default function App() {
   }
 
   if (authState === "required") {
-    return <LoginPage onSuccess={() => setAuthState("ok")} />;
+    if (authView === "pricing") {
+      return (
+        <PricingPage
+          onStartTrial={(planId) => {
+            // Update URL so SignupPage can read ``?plan=`` for the banner.
+            try {
+              const url = new URL(window.location.href);
+              url.searchParams.set("plan", planId);
+              url.searchParams.delete("pricing");
+              window.history.replaceState({}, "", url.toString());
+            } catch {
+              /* no-op in non-browser test envs */
+            }
+            setAuthView("signup");
+          }}
+          onLogin={() => setAuthView("login")}
+        />
+      );
+    }
+    if (authView === "signup") {
+      return (
+        <SignupPage
+          onSuccess={() => {
+            // SignupPage calls /api/auth/signup directly. Pull the freshly
+            // issued session into useAuth so workspaces + the API client
+            // header are populated before we render AppContent.
+            authCtx.refresh();
+            setAuthState("ok");
+          }}
+          onSwitchToLogin={() => setAuthView("login")}
+        />
+      );
+    }
+    if (authView === "forgot") {
+      return (
+        <ForgotPasswordPage onSwitchToLogin={() => setAuthView("login")} />
+      );
+    }
+    return (
+      <LoginPage
+        onSuccess={() => {
+          authCtx.refresh();
+          setAuthState("ok");
+        }}
+        onLegacySuccess={() => setAuthState("ok")}
+        onSwitchToSignup={() => setAuthView("signup")}
+        onSwitchToForgot={() => setAuthView("forgot")}
+      />
+    );
   }
 
   return (
     <AppContent
       authRequired={authRequired}
+      workspaces={authCtx.workspaces}
+      currentWorkspaceId={authCtx.currentWorkspaceId}
+      onSwitchWorkspace={authCtx.switchWorkspace}
+      userEmail={authCtx.user?.email ?? null}
+      userEmailVerified={authCtx.user?.email_verified_at ?? null}
       onLogout={async () => {
-        await api.logout();
+        await authCtx.logout();
+        try { await api.logout(); } catch { /* legacy endpoint may not exist */ }
+        setAuthView("login");
         setAuthState("required");
       }}
     />
@@ -85,14 +223,23 @@ export default function App() {
 
 interface AppContentProps {
   authRequired: boolean;
+  workspaces: { id: string; name: string }[];
+  currentWorkspaceId: string | null;
+  onSwitchWorkspace: (id: string) => void;
+  userEmail: string | null;
+  userEmailVerified: string | null;
   onLogout: () => void;
 }
 
-function AppContent({ authRequired, onLogout }: AppContentProps) {
-  const { profiles, loading, error, create, update, remove, launch, stop } = useProfiles();
+function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWorkspace, userEmail, userEmailVerified, onLogout }: AppContentProps) {
+  // Pass ``currentWorkspaceId`` so useProfiles refetches whenever the user
+  // switches workspace (the header injection happens in lib/api).
+  const { profiles, loading, error, create, update, remove, launch, stop } =
+    useProfiles(currentWorkspaceId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("empty");
   const [sidebarOpen, setSidebarOpen] = useState(true);
+  const [tab, setTab] = useState<Tab>("profiles");
 
   const selected = profiles.find((p) => p.id === selectedId) ?? null;
 
@@ -153,8 +300,8 @@ function AppContent({ authRequired, onLogout }: AppContentProps) {
 
   return (
     <div className="h-screen flex">
-      {/* Sidebar */}
-      {sidebarOpen && (
+      {/* Profile sidebar (only on profiles tab) */}
+      {tab === "profiles" && sidebarOpen && (
         <div className="w-64 border-r border-border bg-surface-1 flex-shrink-0">
           <ProfileList
             profiles={profiles}
@@ -167,6 +314,12 @@ function AppContent({ authRequired, onLogout }: AppContentProps) {
 
       {/* Main panel */}
       <div className="flex-1 flex flex-col min-w-0">
+        <TrialCountdownBanner />
+        {/* Email verification nag — only when the multi-tenant session is
+            present AND the user hasn't verified yet. */}
+        {userEmail && !userEmailVerified && (
+          <EmailVerificationBanner email={userEmail} />
+        )}
         {/* Top bar */}
         <div className="flex items-center justify-between px-4 py-2 border-b border-border bg-surface-1">
           <div className="flex items-center gap-3">
@@ -186,13 +339,68 @@ function AppContent({ authRequired, onLogout }: AppContentProps) {
             )}
           </div>
           <div className="flex items-center gap-2">
-            {selected && (
+            <div className="flex items-center gap-1 mr-2">
+              <button
+                onClick={() => setTab("profiles")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "profiles" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Profiles"
+              >
+                <Server className="h-3.5 w-3.5" />
+                Profiles
+              </button>
+              <button
+                onClick={() => setTab("proxies")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "proxies" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Proxies"
+              >
+                <Globe className="h-3.5 w-3.5" />
+                Proxies
+              </button>
+              <button
+                onClick={() => setTab("automations")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "automations" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Automations"
+              >
+                <Workflow className="h-3.5 w-3.5" />
+                Automations
+              </button>
+              <button
+                onClick={() => setTab("marketplace")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "marketplace" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Marketplace"
+              >
+                <Package className="h-3.5 w-3.5" />
+                Marketplace
+              </button>
+              <button
+                onClick={() => setTab("billing")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "billing" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Billing"
+              >
+                <CreditCard className="h-3.5 w-3.5" />
+                Billing
+              </button>
+              <button
+                onClick={() => setTab("apikeys")}
+                className={`flex items-center gap-1 px-2 py-1 text-xs rounded ${tab === "apikeys" ? "bg-surface-2 text-gray-200" : "text-gray-500 hover:text-gray-300"}`}
+                title="Security (MFA + API keys)"
+              >
+                <Shield className="h-3.5 w-3.5" />
+                Security
+              </button>
+            </div>
+            {tab === "profiles" && selected && (
               <LaunchButton
                 status={selected.status}
                 onLaunch={handleLaunch}
                 onStop={handleStop}
               />
             )}
+            <WorkspaceSelector
+              workspaces={workspaces}
+              currentWorkspaceId={currentWorkspaceId}
+              onSwitch={onSwitchWorkspace}
+            />
             {authRequired && (
               <button
                 onClick={onLogout}
@@ -214,7 +422,18 @@ function AppContent({ authRequired, onLogout }: AppContentProps) {
 
         {/* Content */}
         <div className="flex-1 overflow-y-auto overscroll-contain">
-          {view === "empty" && (
+          {tab === "proxies" && (
+            <ProxyPage currentWorkspaceId={currentWorkspaceId} />
+          )}
+          {tab === "automations" && (
+            <AutomationPage currentWorkspaceId={currentWorkspaceId} />
+          )}
+          {tab === "marketplace" && (
+            <MarketplacePage currentWorkspaceId={currentWorkspaceId} />
+          )}
+          {tab === "billing" && <BillingPage />}
+          {tab === "apikeys" && <ApiKeysPage />}
+          {tab === "profiles" && view === "empty" && (
             <div className="flex items-center justify-center h-full">
               <div className="text-center">
                 <p className="text-gray-500 text-sm">Select a profile or create a new one</p>
@@ -222,7 +441,7 @@ function AppContent({ authRequired, onLogout }: AppContentProps) {
             </div>
           )}
 
-          {view === "create" && (
+          {tab === "profiles" && view === "create" && (
             <ProfileForm
               profile={null}
               onSave={handleCreate}
@@ -230,7 +449,7 @@ function AppContent({ authRequired, onLogout }: AppContentProps) {
             />
           )}
 
-          {view === "edit" && selected && (
+          {tab === "profiles" && view === "edit" && selected && (
             <ProfileForm
               profile={selected}
               onSave={handleUpdate}
@@ -242,7 +461,7 @@ function AppContent({ authRequired, onLogout }: AppContentProps) {
             />
           )}
 
-          {view === "view" && selected && selected.status === "running" && (
+          {tab === "profiles" && view === "view" && selected && selected.status === "running" && (
             <ProfileViewer
               key={selected.id}
               profileId={selected.id}
