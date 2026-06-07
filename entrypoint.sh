@@ -20,6 +20,21 @@ rm -f /tmp/.X1*-lock 2>/dev/null || true
 
 # Run database migrations before starting the API.
 cd /app/backend
+python - <<'PY'
+import os
+import psycopg2
+
+with psycopg2.connect(os.environ["DATABASE_URL"]) as conn:
+    with conn.cursor() as cur:
+        cur.execute(
+            "CREATE TABLE IF NOT EXISTS alembic_version "
+            "(version_num VARCHAR(128) NOT NULL)"
+        )
+        cur.execute(
+            "ALTER TABLE alembic_version "
+            "ALTER COLUMN version_num TYPE VARCHAR(128)"
+        )
+PY
 echo "  Applying database migrations..."
 alembic upgrade head
 cd /app
