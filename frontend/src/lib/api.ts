@@ -179,4 +179,48 @@ export const api = {
 
   getClipboard: (id: string) =>
     request<{ text: string }>(`/api/profiles/${id}/clipboard`),
+
+  // ── Bulk / fleet operations ────────────────────────────────────────────
+  // Mounted at /api/profiles-bulk to avoid the {profile_id} route collision
+  // — see backend/routers/profiles.py for the rationale.
+  bulkLaunch: (profileIds: string[]) =>
+    request<BulkProfileResult>("/api/profiles-bulk/launch", {
+      method: "POST",
+      body: JSON.stringify({ profile_ids: profileIds }),
+    }),
+
+  bulkStop: (profileIds: string[]) =>
+    request<BulkProfileResult>("/api/profiles-bulk/stop", {
+      method: "POST",
+      body: JSON.stringify({ profile_ids: profileIds }),
+    }),
+
+  bulkResize: (profileIds: string[], width: number, height: number) =>
+    request<BulkProfileResult>("/api/profiles-bulk/resize", {
+      method: "POST",
+      body: JSON.stringify({ profile_ids: profileIds, width, height }),
+    }),
+
+  bulkRunAutomation: (automationId: string, profileIds: string[]) =>
+    request<BulkProfileResult>("/api/profiles-bulk/run-automation", {
+      method: "POST",
+      body: JSON.stringify({
+        automation_id: automationId,
+        profile_ids: profileIds,
+      }),
+    }),
 };
+
+export interface BulkProfileItemResult {
+  profile_id: string;
+  ok: boolean;
+  status?: string | null;
+  run_id?: string | null;
+  error?: string | null;
+}
+
+export interface BulkProfileResult {
+  succeeded: number;
+  failed: number;
+  results: BulkProfileItemResult[];
+}

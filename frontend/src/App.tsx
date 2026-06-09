@@ -2,8 +2,14 @@ import { useState, useCallback, useEffect } from "react";
 import { Lock, PanelLeftClose, PanelLeft, Server, Globe, Workflow, CreditCard, Package, Shield } from "lucide-react";
 import { useProfiles } from "./hooks/useProfiles";
 import { useAuth } from "./hooks/useAuth";
-import { api, setOnUnauthorized, type ProfileCreateData } from "./lib/api";
+import { api, setOnUnauthorized, type BulkProfileResult, type ProfileCreateData } from "./lib/api";
+import { automation as automationApi, type Automation } from "./lib/automation";
 import { ProfileList } from "./components/ProfileList";
+import {
+  BulkResizeModal,
+  BulkRunAutomationModal,
+  BulkResultBanner,
+} from "./components/BulkOpsModals";
 import { ProfileForm } from "./components/ProfileForm";
 import { ProfileViewer } from "./components/ProfileViewer";
 import { LaunchButton } from "./components/LaunchButton";
@@ -234,12 +240,115 @@ interface AppContentProps {
 function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWorkspace, userEmail, userEmailVerified, onLogout }: AppContentProps) {
   // Pass ``currentWorkspaceId`` so useProfiles refetches whenever the user
   // switches workspace (the header injection happens in lib/api).
-  const { profiles, loading, error, create, update, remove, launch, stop } =
+  const { profiles, loading, error, create, update, remove, launch, stop, refresh: refreshProfiles } =
     useProfiles(currentWorkspaceId);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [view, setView] = useState<View>("empty");
   const [sidebarOpen, setSidebarOpen] = useState(true);
   const [tab, setTab] = useState<Tab>("profiles");
+
+  // ── Bulk operations state ───────────────────────────────────────────────
+  // Lifted here (above ProfileList) so the resize / run-automation modals
+  // can stay rendered when the sidebar is hidden. The pending ids are
+  // captured at click time so a status refresh between click and
+  // confirm doesn't change what we operate on.
+  const [bulkResizeIds, setBulkResizeIds] = useState<string[] | null>(null);
+  const [bulkRunIds, setBulkRunIds] = useState<string[] | null>(null);
+  const [bulkAutomations, setBulkAutomations] = useState<Automation[]>([]);
+  const [bulkResult, setBulkResult] = useState<
+    { title: string; result: BulkProfileResult } | null
+  >(null);
+
+  const handleBulkLaunch = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
+    try {
+      const res = await api.bulkLaunch(ids);
+      setBulkResult({ title: `Launch ${ids.length} profile${ids.length === 1 ? "" : "s"}`, result: res });
+      refreshProfiles();
+    } catch (err) {
+      setBulkResult({
+        title: "Launch failed",
+        result: {
+          succeeded: 0,
+          failed: ids.length,
+          results: ids.map((id) => ({ profile_id: id, ok: false, error: String(err) })),
+        },
+      });
+    }
+  }, [refreshProfiles]);
+
+  const handleBulkStop = useCallback(async (ids: string[]) => {
+    if (ids.length === 0) return;
+    try {
+      const res = await api.bulkStop(ids);
+      setBulkResult({ title: `Stop ${ids.length} profile${ids.length === 1 ? "" : "s"}`, result: res });
+      refreshProfiles();
+    } catch (err) {
+      setBulkResult({
+        title: "Stop failed",
+        result: {
+          succeeded: 0,
+          failed: ids.length,
+          results: ids.map((id) => ({ profile_id: id, ok: false, error: String(err) })),
+        },
+      });
+    }
+  }, [refreshProfiles]);
+
+  const handleBulkResizeApply = useCallback(
+    async (ids: string[], width: number, height: number) => {
+      try {
+        const res = await api.bulkResize(ids, width, height);
+        setBulkResult({
+          title: `Resize ${ids.length} → ${width}×${height}`,
+          result: res,
+        });
+        refreshProfiles();
+      } catch (err) {
+        setBulkResult({
+          title: "Resize failed",
+          result: {
+            succeeded: 0,
+            failed: ids.length,
+            results: ids.map((id) => ({ profile_id: id, ok: false, error: String(err) })),
+          },
+        });
+      }
+    },
+    [refreshProfiles],
+  );
+
+  const openBulkRunModal = useCallback(async (ids: string[]) => {
+    setBulkRunIds(ids);
+    try {
+      const list = await automationApi.list();
+      setBulkAutomations(list);
+    } catch {
+      setBulkAutomations([]);
+    }
+  }, []);
+
+  const handleBulkRunConfirm = useCallback(
+    async (ids: string[], automationId: string) => {
+      try {
+        const res = await api.bulkRunAutomation(automationId, ids);
+        setBulkResult({
+          title: `Run automation on ${ids.length} profile${ids.length === 1 ? "" : "s"}`,
+          result: res,
+        });
+      } catch (err) {
+        setBulkResult({
+          title: "Bulk run failed",
+          result: {
+            succeeded: 0,
+            failed: ids.length,
+            results: ids.map((id) => ({ profile_id: id, ok: false, error: String(err) })),
+          },
+        });
+      }
+    },
+    [],
+  );
 
   const selected = profiles.find((p) => p.id === selectedId) ?? null;
 
@@ -308,6 +417,10 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
             selectedId={selectedId}
             onSelect={handleSelect}
             onNew={handleNew}
+            onBulkLaunch={handleBulkLaunch}
+            onBulkStop={handleBulkStop}
+            onBulkResize={(ids) => setBulkResizeIds(ids)}
+            onBulkRunAutomation={openBulkRunModal}
           />
         </div>
       )}
@@ -472,6 +585,38 @@ function AppContent({ authRequired, workspaces, currentWorkspaceId, onSwitchWork
           )}
         </div>
       </div>
+
+      {/* ── Bulk operations modals + result toast ──────────────────────── */}
+      {bulkResizeIds && (
+        <BulkResizeModal
+          count={bulkResizeIds.length}
+          onClose={() => setBulkResizeIds(null)}
+          onConfirm={(w, h) => {
+            const ids = bulkResizeIds;
+            setBulkResizeIds(null);
+            handleBulkResizeApply(ids, w, h);
+          }}
+        />
+      )}
+      {bulkRunIds && (
+        <BulkRunAutomationModal
+          count={bulkRunIds.length}
+          automations={bulkAutomations}
+          onClose={() => setBulkRunIds(null)}
+          onConfirm={(autoId) => {
+            const ids = bulkRunIds;
+            setBulkRunIds(null);
+            handleBulkRunConfirm(ids, autoId);
+          }}
+        />
+      )}
+      {bulkResult && (
+        <BulkResultBanner
+          title={bulkResult.title}
+          result={bulkResult.result}
+          onDismiss={() => setBulkResult(null)}
+        />
+      )}
     </div>
   );
 }

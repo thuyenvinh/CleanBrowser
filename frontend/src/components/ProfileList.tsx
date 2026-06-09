@@ -1,4 +1,4 @@
-import { Plus, Search, Monitor, X } from "lucide-react";
+import { Plus, Search, Monitor, X, Play, Square, Maximize2, Workflow } from "lucide-react";
 import { useMemo, useState } from "react";
 import type { Profile } from "../lib/api";
 import { StatusIndicator } from "./StatusIndicator";
@@ -8,9 +8,29 @@ interface ProfileListProps {
   selectedId: string | null;
   onSelect: (id: string) => void;
   onNew: () => void;
+  /** Bulk callbacks — when undefined the toolbar collapses to read-only mode. */
+  onBulkLaunch?: (profileIds: string[]) => void;
+  onBulkStop?: (profileIds: string[]) => void;
+  onBulkResize?: (profileIds: string[]) => void;
+  onBulkRunAutomation?: (profileIds: string[]) => void;
 }
 
-export function ProfileList({ profiles, selectedId, onSelect, onNew }: ProfileListProps) {
+export function ProfileList({
+  profiles,
+  selectedId,
+  onSelect,
+  onNew,
+  onBulkLaunch,
+  onBulkStop,
+  onBulkResize,
+  onBulkRunAutomation,
+}: ProfileListProps) {
+  // Multi-select state. Stored as a Set keyed by profile id so toggling
+  // is O(1) and the selection survives re-renders triggered by status
+  // polling. Ids that disappear (profile deleted out-of-band) are
+  // implicitly cleaned up by intersecting with the current list at
+  // toolbar-click time.
+  const [selected, setSelected] = useState<Set<string>>(new Set());
   const [search, setSearch] = useState("");
   // M12: filter by tags (multi-select) and region (single-select). These are
   // derived from the loaded profile list — we intentionally don't fetch them
@@ -63,6 +83,28 @@ export function ProfileList({ profiles, selectedId, onSelect, onNew }: ProfileLi
   };
 
   const runningCount = profiles.filter((p) => p.status === "running").length;
+
+  const toggleSelect = (id: string) => {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+  const selectAllFiltered = () => {
+    setSelected(new Set(filtered.map((p) => p.id)));
+  };
+  const clearSelection = () => setSelected(new Set());
+  // Filter to ids that still exist in the current list, then pass to the
+  // callback. Prevents stale ids leaking into the bulk request.
+  const selectedIds = (): string[] => {
+    const visibleIds = new Set(profiles.map((p) => p.id));
+    return Array.from(selected).filter((id) => visibleIds.has(id));
+  };
+  const bulkEnabled = Boolean(
+    onBulkLaunch || onBulkStop || onBulkResize || onBulkRunAutomation,
+  );
 
   return (
     <div className="flex flex-col h-full">
@@ -143,6 +185,70 @@ export function ProfileList({ profiles, selectedId, onSelect, onNew }: ProfileLi
         )}
       </div>
 
+      {/* Bulk toolbar — only visible when at least one row is checked. */}
+      {bulkEnabled && selected.size > 0 && (
+        <div className="px-3 py-2 border-b border-border bg-surface-2 flex items-center gap-1.5 flex-wrap">
+          <span className="text-xs text-gray-300 mr-1">
+            {selected.size} selected
+          </span>
+          {onBulkLaunch && (
+            <button
+              type="button"
+              onClick={() => onBulkLaunch(selectedIds())}
+              title="Launch all selected"
+              className="h-6 px-2 inline-flex items-center gap-1 rounded text-[11px] bg-emerald-600 hover:bg-emerald-500 text-white"
+            >
+              <Play className="h-3 w-3" /> Launch
+            </button>
+          )}
+          {onBulkStop && (
+            <button
+              type="button"
+              onClick={() => onBulkStop(selectedIds())}
+              title="Stop all selected"
+              className="h-6 px-2 inline-flex items-center gap-1 rounded text-[11px] bg-red-600 hover:bg-red-500 text-white"
+            >
+              <Square className="h-3 w-3" /> Stop
+            </button>
+          )}
+          {onBulkResize && (
+            <button
+              type="button"
+              onClick={() => onBulkResize(selectedIds())}
+              title="Resize viewport on all selected"
+              className="h-6 px-2 inline-flex items-center gap-1 rounded text-[11px] bg-surface-3 hover:bg-surface-4 text-gray-200"
+            >
+              <Maximize2 className="h-3 w-3" /> Resize
+            </button>
+          )}
+          {onBulkRunAutomation && (
+            <button
+              type="button"
+              onClick={() => onBulkRunAutomation(selectedIds())}
+              title="Run an automation against all selected"
+              className="h-6 px-2 inline-flex items-center gap-1 rounded text-[11px] bg-accent hover:bg-accent/80 text-white"
+            >
+              <Workflow className="h-3 w-3" /> Run
+            </button>
+          )}
+          <div className="flex-1" />
+          <button
+            type="button"
+            onClick={selectAllFiltered}
+            className="text-[10px] text-gray-400 hover:text-gray-200"
+          >
+            Select all ({filtered.length})
+          </button>
+          <button
+            type="button"
+            onClick={clearSelection}
+            className="text-[10px] text-gray-400 hover:text-gray-200 ml-2"
+          >
+            Clear
+          </button>
+        </div>
+      )}
+
       {/* Profile list */}
       <div className="flex-1 overflow-y-auto p-2">
         {filtered.length === 0 && (
@@ -151,15 +257,30 @@ export function ProfileList({ profiles, selectedId, onSelect, onNew }: ProfileLi
           </div>
         )}
         {filtered.map((profile) => (
-          <button
+          <div
             key={profile.id}
-            onClick={() => onSelect(profile.id)}
-            className={`w-full text-left px-3 py-2.5 rounded-md mb-1 transition-colors ${
+            className={`flex items-start gap-2 w-full px-3 py-2.5 rounded-md mb-1 transition-colors ${
               selectedId === profile.id
                 ? "bg-surface-3 border border-border-hover"
-                : "hover:bg-surface-2 border border-transparent"
+                : selected.has(profile.id)
+                  ? "bg-surface-2 border border-accent/40"
+                  : "hover:bg-surface-2 border border-transparent"
             }`}
           >
+            {bulkEnabled && (
+              <input
+                type="checkbox"
+                checked={selected.has(profile.id)}
+                onChange={() => toggleSelect(profile.id)}
+                onClick={(e) => e.stopPropagation()}
+                aria-label={`Select ${profile.name}`}
+                className="mt-1 cursor-pointer accent-emerald-500"
+              />
+            )}
+            <button
+              onClick={() => onSelect(profile.id)}
+              className="flex-1 text-left"
+            >
             <div className="flex items-center gap-2">
               <StatusIndicator status={profile.status} />
               <span className="text-sm font-medium truncate">{profile.name}</span>
@@ -192,7 +313,8 @@ export function ProfileList({ profiles, selectedId, onSelect, onNew }: ProfileLi
                 ))}
               </div>
             )}
-          </button>
+            </button>
+          </div>
         ))}
       </div>
 

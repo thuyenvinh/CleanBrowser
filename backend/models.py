@@ -991,3 +991,69 @@ class OverageEvent(BaseModel):
     occurred_at: datetime
     period_start: date
     period_end: date
+
+
+# ---------------------------------------------------------------------------
+# Bulk profile operations (M-bulk).
+#
+# Multi-profile workflows: launch a fleet, stop a fleet, change viewport
+# size on every selected profile, fire one automation across many
+# profiles in a single click. Each endpoint accepts a list of profile
+# ids; the response is a per-profile result list so the UI can show
+# partial-success states (e.g. 3 of 5 launched, 2 hit quota).
+# ---------------------------------------------------------------------------
+
+
+class BulkProfileIdsRequest(BaseModel):
+    """Body shared by /api/profiles/bulk/{launch,stop}.
+
+    ``profile_ids`` is capped to 50 per call to bound the work the
+    backend takes on per request — clients with larger fleets paginate.
+    """
+
+    profile_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+class BulkResizeRequest(BaseModel):
+    """Body for /api/profiles/bulk/resize.
+
+    ``width`` and ``height`` are persisted to ``profiles.screen_width /
+    screen_height``. If a profile is currently running we also try to
+    resize the live viewport via CDP; failures there are surfaced in
+    the response but don't roll back the DB write (the new size will
+    take effect on the next launch).
+    """
+
+    profile_ids: list[str] = Field(min_length=1, max_length=50)
+    width: int = Field(ge=320, le=7680)
+    height: int = Field(ge=240, le=4320)
+
+
+class BulkRunAutomationRequest(BaseModel):
+    """Body for /api/profiles/bulk/run-automation.
+
+    One automation, many profiles — the scheduler creates one ``runs``
+    row per profile and dispatches them concurrently. The automation
+    must already have a saved version; bulk-run does not auto-create.
+    """
+
+    automation_id: str
+    profile_ids: list[str] = Field(min_length=1, max_length=50)
+
+
+class BulkProfileItemResult(BaseModel):
+    """Per-profile outcome inside a bulk response."""
+
+    profile_id: str
+    ok: bool
+    status: str | None = None  # "running", "stopped", "queued", "resized", "skipped"
+    run_id: str | None = None  # filled for run-automation
+    error: str | None = None   # filled when ok=False
+
+
+class BulkProfileResponse(BaseModel):
+    """Aggregate result of a bulk profile operation."""
+
+    succeeded: int
+    failed: int
+    results: list[BulkProfileItemResult]

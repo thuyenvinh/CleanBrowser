@@ -26,6 +26,7 @@ from fastapi import APIRouter, Depends, HTTPException, Request
 
 from .. import database as db
 from .. import db_auth
+from .. import db_automation
 from .. import db_proxy
 from .. import db_versions
 from .. import quota as _quota
@@ -34,9 +35,15 @@ from ..dependencies import (
     ROLE_LEVEL,
     browser_mgr,
     check_role_for_workspace,
+    get_current_user,
     get_optional_user,
 )
 from ..models import (
+    BulkProfileIdsRequest,
+    BulkProfileItemResult,
+    BulkProfileResponse,
+    BulkResizeRequest,
+    BulkRunAutomationRequest,
     LaunchResponse,
     PresignedUrlResponse,
     ProfileCreate,
@@ -51,6 +58,13 @@ from ..models import (
 logger = logging.getLogger("cloakbrowser.manager")
 
 router = APIRouter(prefix="/api/profiles", tags=["profiles"])
+
+# Separate router for fleet / bulk operations. Mounted at
+# ``/api/profiles-bulk`` so the path doesn't collide with the
+# ``/{profile_id}/...`` routes on the main router (FastAPI's regex path
+# matcher would otherwise interpret ``/api/profiles/bulk/launch`` as
+# ``profile_id=bulk`` and 404 the request).
+bulk_router = APIRouter(prefix="/api/profiles-bulk", tags=["profiles"])
 
 
 # ── Helpers ──────────────────────────────────────────────────────────────────
@@ -535,4 +549,295 @@ async def get_version_download_url(
         expires_in=3600,
         storage_key=v["storage_key"],
         size_bytes=v["size_bytes"],
+    )
+
+
+# ---------------------------------------------------------------------------
+# Bulk operations — launch / stop / resize / run-automation on N profiles
+# in one call. Multi-tenant boundaries are enforced *per profile* so a
+# crafted request that mixes workspaces gets 404'd profile-by-profile
+# instead of leaking existence.
+# ---------------------------------------------------------------------------
+
+
+def _check_bulk_profile(
+    profile_id: str, user: dict[str, Any], min_level: int
+) -> tuple[dict[str, Any] | None, str | None]:
+    """Resolve + authorize a profile inside a bulk handler.
+
+    Returns ``(profile, None)`` on success or ``(None, error_str)`` on any
+    membership / role failure. We never raise — the bulk endpoint records
+    the error against the offending profile and continues with the rest.
+    """
+    try:
+        profile = db.get_profile(profile_id)
+    except Exception:
+        logger.exception("bulk: get_profile failed for %s", profile_id)
+        return None, "lookup failed"
+    if not profile:
+        return None, "Profile not found"
+    ws_id = profile.get("workspace_id")
+    if not ws_id:
+        return None, "Profile not found"  # orphan / legacy — hide
+    try:
+        role = db_auth.get_member_role(ws_id, user["id"])
+    except Exception:
+        logger.exception("bulk: get_member_role failed for ws=%s", ws_id)
+        return None, "role lookup failed"
+    if not role:
+        return None, "Profile not found"
+    if ROLE_LEVEL.get(role, 0) < min_level:
+        return None, "insufficient role"
+    return profile, None
+
+
+@bulk_router.post("/launch", response_model=BulkProfileResponse)
+async def bulk_launch(
+    body: BulkProfileIdsRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> BulkProfileResponse:
+    """Launch a fleet of profiles in one call.
+
+    Per-profile semantics:
+      * ``status="running"`` if launched successfully
+      * ``status="skipped"`` + ``ok=True`` if already running (idempotent)
+      * ``ok=False`` for membership / role / quota / launch errors
+
+    Concurrency is bounded by ``asyncio.gather`` over the input list —
+    BrowserManager itself serialises display allocation, so launches
+    interleave inside a single event loop without stomping on each other.
+    """
+    results: list[BulkProfileItemResult] = []
+
+    async def _one(pid: str) -> BulkProfileItemResult:
+        profile, err = _check_bulk_profile(pid, user, ROLE_LEVEL["launcher"])
+        if err or profile is None:
+            return BulkProfileItemResult(profile_id=pid, ok=False, error=err)
+        if pid in browser_mgr.running:
+            return BulkProfileItemResult(
+                profile_id=pid, ok=True, status="skipped"
+            )
+        try:
+            _quota.check_quota(
+                user["tenant_id"], "launch_profile"
+            ).raise_if_exceeded()
+        except HTTPException as exc:
+            return BulkProfileItemResult(
+                profile_id=pid, ok=False, error=str(exc.detail)
+            )
+        try:
+            await browser_mgr.launch(profile)
+        except Exception as exc:
+            logger.error("bulk launch failed for %s: %s", pid, exc)
+            return BulkProfileItemResult(
+                profile_id=pid, ok=False, error=str(exc) or "launch failed"
+            )
+        _quota.record_usage(user["tenant_id"], "launch_profile")
+        return BulkProfileItemResult(profile_id=pid, ok=True, status="running")
+
+    import asyncio as _asyncio
+
+    results = await _asyncio.gather(*(_one(pid) for pid in body.profile_ids))
+    succeeded = sum(1 for r in results if r.ok)
+    return BulkProfileResponse(
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        results=results,
+    )
+
+
+@bulk_router.post("/stop", response_model=BulkProfileResponse)
+async def bulk_stop(
+    body: BulkProfileIdsRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> BulkProfileResponse:
+    """Stop multiple running profiles in one call.
+
+    ``status="stopped"`` if we shut the browser down; ``status="skipped"``
+    if the profile wasn't running (idempotent).
+    """
+    results: list[BulkProfileItemResult] = []
+    for pid in body.profile_ids:
+        profile, err = _check_bulk_profile(pid, user, ROLE_LEVEL["launcher"])
+        if err or profile is None:
+            results.append(BulkProfileItemResult(profile_id=pid, ok=False, error=err))
+            continue
+        if pid not in browser_mgr.running:
+            results.append(
+                BulkProfileItemResult(profile_id=pid, ok=True, status="skipped")
+            )
+            continue
+        try:
+            await browser_mgr.stop(pid)
+            results.append(
+                BulkProfileItemResult(profile_id=pid, ok=True, status="stopped")
+            )
+        except Exception as exc:
+            logger.exception("bulk stop failed for %s", pid)
+            results.append(
+                BulkProfileItemResult(
+                    profile_id=pid, ok=False, error=str(exc) or "stop failed"
+                )
+            )
+    succeeded = sum(1 for r in results if r.ok)
+    return BulkProfileResponse(
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        results=results,
+    )
+
+
+@bulk_router.post("/resize", response_model=BulkProfileResponse)
+async def bulk_resize(
+    body: BulkResizeRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> BulkProfileResponse:
+    """Update viewport size on N profiles in one call.
+
+    Persists ``screen_width / screen_height`` to the DB row. For
+    currently-running profiles we additionally try to resize the live
+    viewport via CDP (``Emulation.setDeviceMetricsOverride``); failures
+    in that path are surfaced in ``error`` but don't roll back the DB
+    write — the new size will take effect on the next launch.
+
+    The DB write requires editor+; the live CDP push only requires
+    launcher+ because the viewport already exists. We gate on editor+
+    so the call's primary effect (persisted config) is always allowed
+    or always denied — no half-effects across the fleet.
+    """
+    results: list[BulkProfileItemResult] = []
+    for pid in body.profile_ids:
+        profile, err = _check_bulk_profile(pid, user, ROLE_LEVEL["editor"])
+        if err or profile is None:
+            results.append(BulkProfileItemResult(profile_id=pid, ok=False, error=err))
+            continue
+        try:
+            db.update_profile(
+                pid, screen_width=body.width, screen_height=body.height
+            )
+        except Exception as exc:
+            logger.exception("bulk resize DB write failed for %s", pid)
+            results.append(
+                BulkProfileItemResult(
+                    profile_id=pid, ok=False, error=str(exc) or "resize failed"
+                )
+            )
+            continue
+        # Best-effort live resize for already-running browsers.
+        running = browser_mgr.running.get(pid)
+        if running is not None:
+            try:
+                for page in running.context.pages:
+                    cdp = await page.context.new_cdp_session(page)
+                    await cdp.send(
+                        "Emulation.setDeviceMetricsOverride",
+                        {
+                            "width": body.width,
+                            "height": body.height,
+                            "deviceScaleFactor": 1,
+                            "mobile": False,
+                        },
+                    )
+                    await cdp.detach()
+            except Exception as exc:
+                logger.debug("bulk resize live CDP failed for %s: %s", pid, exc)
+                # DB already updated — surface as partial success.
+                results.append(
+                    BulkProfileItemResult(
+                        profile_id=pid,
+                        ok=True,
+                        status="resized",
+                        error=f"persisted but live resize failed: {exc}",
+                    )
+                )
+                continue
+        results.append(
+            BulkProfileItemResult(profile_id=pid, ok=True, status="resized")
+        )
+    succeeded = sum(1 for r in results if r.ok)
+    return BulkProfileResponse(
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        results=results,
+    )
+
+
+@bulk_router.post("/run-automation", response_model=BulkProfileResponse)
+async def bulk_run_automation(
+    body: BulkRunAutomationRequest,
+    user: dict[str, Any] = Depends(get_current_user),
+) -> BulkProfileResponse:
+    """Fire one automation against N profiles concurrently.
+
+    Creates one ``runs`` row per profile and dispatches the executor
+    background task for each. The automation must (a) belong to a
+    workspace the caller is a launcher+ in, and (b) have a saved version.
+    Per-profile membership is still enforced — a profile outside the
+    caller's tenants is reported as 404 individually.
+    """
+    # Resolve automation + check role on its workspace.
+    automation = db_automation.get_automation(body.automation_id)
+    if not automation:
+        raise HTTPException(status_code=404, detail="Automation not found")
+    auto_ws = automation.get("workspace_id")
+    check_role_for_workspace(user, auto_ws, ROLE_LEVEL["launcher"])
+
+    latest_version_id = automation.get("latest_version_id")
+    if not latest_version_id:
+        raise HTTPException(
+            status_code=400,
+            detail="automation has no versions yet; create one first",
+        )
+    version = db_automation.get_version(latest_version_id)
+    if not version:
+        raise HTTPException(
+            status_code=400,
+            detail="latest version is missing; create a new one",
+        )
+
+    # Quota: 402 if the tenant has burned through automation minutes —
+    # check once up front so we don't queue half a fleet before failing.
+    _quota.check_quota(
+        user["tenant_id"], "run_automation"
+    ).raise_if_exceeded()
+
+    # Lazy import — see trigger_run in routers/automations.py for the
+    # same dance with circular import.
+    import asyncio as _asyncio
+
+    from .automations import _execute_run_async
+
+    results: list[BulkProfileItemResult] = []
+    for pid in body.profile_ids:
+        profile, err = _check_bulk_profile(pid, user, ROLE_LEVEL["launcher"])
+        if err or profile is None:
+            results.append(BulkProfileItemResult(profile_id=pid, ok=False, error=err))
+            continue
+        try:
+            run = db_automation.create_run(
+                automation_version_id=latest_version_id,
+                profile_id=pid,
+                triggered_by="manual",
+                triggered_by_user_id=user.get("id"),
+            )
+        except Exception as exc:
+            logger.exception("bulk run-automation: create_run failed for %s", pid)
+            results.append(
+                BulkProfileItemResult(
+                    profile_id=pid, ok=False, error=str(exc) or "run create failed"
+                )
+            )
+            continue
+        _asyncio.create_task(_execute_run_async(run["id"], version, pid))
+        _quota.record_usage(user["tenant_id"], "run_automation")
+        results.append(
+            BulkProfileItemResult(
+                profile_id=pid, ok=True, status="queued", run_id=run["id"]
+            )
+        )
+    succeeded = sum(1 for r in results if r.ok)
+    return BulkProfileResponse(
+        succeeded=succeeded,
+        failed=len(results) - succeeded,
+        results=results,
     )
