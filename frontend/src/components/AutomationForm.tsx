@@ -80,7 +80,10 @@ export function AutomationForm({
   // Flow editor mode toggle. Visual hands off to ``FlowEditor`` (agent OO);
   // JSON edits the raw DSL text. Both write to ``versionBody`` so saving
   // is unchanged.
-  const [editorMode, setEditorMode] = useState<"json" | "visual">("json");
+  // Default to the visual node-graph editor for flow automations so
+  // non-technical users never see raw DSL JSON unless they explicitly
+  // switch to it. Script automations have no visual mode.
+  const [editorMode, setEditorMode] = useState<"json" | "visual">("visual");
   // AI Build modal state — see "AI Build" button below the editor mode toggle.
   const [aiOpen, setAiOpen] = useState(false);
   const [aiPrompt, setAiPrompt] = useState("");

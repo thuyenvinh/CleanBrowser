@@ -35,7 +35,16 @@ export default defineConfig({
   projects: [
     {
       name: "chromium",
-      use: { ...devices["Desktop Chrome"] },
+      use: {
+        ...devices["Desktop Chrome"],
+        // Allow pointing at a pre-installed Chromium when the managed
+        // environment ships one whose build differs from the pinned
+        // Playwright (set PW_CHROMIUM_PATH=/opt/pw-browsers/chromium). CI
+        // leaves it unset and uses the bundled browser.
+        ...(process.env.PW_CHROMIUM_PATH
+          ? { launchOptions: { executablePath: process.env.PW_CHROMIUM_PATH } }
+          : {}),
+      },
     },
   ],
   // Webserver block intentionally omitted — assume backend đã start ngoài.

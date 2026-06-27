@@ -16,6 +16,7 @@
  */
 import { Save, Trash2 } from "lucide-react";
 import { useEffect, useState } from "react";
+import { CronBuilder } from "./CronBuilder";
 
 // --- TEMP LOCAL TYPES (replace with import from "../lib/automation") --------
 export interface Schedule {
@@ -229,20 +230,20 @@ export function ScheduleForm({
 
       <div className="space-y-3">
         <div>
-          <label className="label" htmlFor="pf-cron-expression-1">Cron expression</label>
-              <input id="pf-cron-expression-1"
-            className="input font-mono"
+          <label className="label" htmlFor="pf-cron-expression-1">Schedule</label>
+          {/* Visual cron builder — generates the cron string from a
+              frequency picker. Power users can switch to raw-cron entry
+              via the "Advanced" toggle inside the builder. The hidden
+              input keeps the value addressable for E2E/getByLabel. */}
+          <input
+            id="pf-cron-expression-1"
+            type="hidden"
             value={form.cron}
-            onChange={(e) => set("cron", e.target.value)}
-            placeholder="0 9 * * *"
-            autoComplete="off"
+            readOnly
           />
-          {errors.cron ? (
+          <CronBuilder value={form.cron} onChange={(c) => set("cron", c)} />
+          {errors.cron && (
             <p className="text-xs text-red-400 mt-1">{errors.cron}</p>
-          ) : (
-            <p className="text-xs text-gray-500 mt-1">
-              5 fields (min hour dom mon dow) or 6 fields (with seconds).
-            </p>
           )}
         </div>
 

@@ -4,6 +4,8 @@ import type {
   MarketplaceApp,
   MarketplaceAppSubmit,
 } from "../lib/marketplace";
+import { FlowEditor } from "./FlowEditor";
+import type { DslFlow } from "../lib/flowToDsl";
 
 interface MarketplaceSubmitDialogProps {
   onClose: () => void;
@@ -33,6 +35,8 @@ export function MarketplaceSubmitDialog({
   const [dslText, setDslText] = useState(
     '{\n  "version": 1,\n  "start": "n1",\n  "nodes": [\n    {"id": "n1", "type": "log", "params": {"message": "hello"}}\n  ]\n}',
   );
+  // Default to the visual editor; "raw JSON" is the escape hatch.
+  const [dslMode, setDslMode] = useState<"visual" | "json">("visual");
   const [creatorName, setCreatorName] = useState("");
   const [creatorUrl, setCreatorUrl] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -199,20 +203,62 @@ export function MarketplaceSubmitDialog({
           </div>
 
           <div>
-            <label className="block text-xs text-gray-400 mb-1">
-              Flow DSL JSON <span className="text-red-400">*</span>
-            </label>
-            <textarea
-              value={dslText}
-              onChange={(e) => setDslText(e.target.value)}
-              spellCheck={false}
-              rows={10}
-              className="w-full px-2 py-1.5 text-xs font-mono bg-surface-2 border border-border rounded text-gray-100"
-              required
-            />
-            <p className="text-[10px] text-gray-600 mt-1">
-              Must be valid JSON with a top-level <code>nodes</code> array.
-            </p>
+            <div className="flex items-center justify-between mb-1">
+              <label className="block text-xs text-gray-400">
+                Flow definition <span className="text-red-400">*</span>
+              </label>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  onClick={() => setDslMode("visual")}
+                  className={`px-2 py-0.5 text-[11px] rounded border ${
+                    dslMode === "visual"
+                      ? "bg-accent/15 text-accent border-accent/40"
+                      : "bg-surface-2 text-gray-400 border-border"
+                  }`}
+                >
+                  Visual
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDslMode("json")}
+                  className={`px-2 py-0.5 text-[11px] rounded border ${
+                    dslMode === "json"
+                      ? "bg-accent/15 text-accent border-accent/40"
+                      : "bg-surface-2 text-gray-400 border-border"
+                  }`}
+                >
+                  Raw JSON
+                </button>
+              </div>
+            </div>
+            {dslMode === "visual" ? (
+              <FlowEditor
+                height={340}
+                value={(() => {
+                  try {
+                    return JSON.parse(dslText) as DslFlow;
+                  } catch {
+                    return { version: 1, start: "", nodes: [] };
+                  }
+                })()}
+                onChange={(dsl) => setDslText(JSON.stringify(dsl, null, 2))}
+              />
+            ) : (
+              <>
+                <textarea
+                  value={dslText}
+                  onChange={(e) => setDslText(e.target.value)}
+                  spellCheck={false}
+                  rows={10}
+                  className="w-full px-2 py-1.5 text-xs font-mono bg-surface-2 border border-border rounded text-gray-100"
+                  required
+                />
+                <p className="text-[10px] text-gray-600 mt-1">
+                  Must be valid JSON with a top-level <code>nodes</code> array.
+                </p>
+              </>
+            )}
           </div>
 
           <div className="grid grid-cols-2 gap-3">

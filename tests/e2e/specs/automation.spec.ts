@@ -191,9 +191,9 @@ test.describe("automations", () => {
     if (await schedSection.count()) await schedSection.click();
 
     // The Schedules section is rendered inline. Click the "Add schedule"
-    // CTA only if the form isn't already exposed.
-    const cronInput = page.getByLabel(/cron|expression/i).first();
-    if (!(await cronInput.isVisible().catch(() => false))) {
+    // CTA to expose the visual cron builder.
+    const dailyBtn = page.getByRole("button", { name: /^daily$/i }).first();
+    if (!(await dailyBtn.isVisible().catch(() => false))) {
       const addBtn = page
         .getByRole("button", { name: /add schedule|new schedule|\+ schedule/i })
         .first();
@@ -201,12 +201,11 @@ test.describe("automations", () => {
       await addBtn.click();
     }
 
-    await cronInput.fill("0 9 * * *");
-    // Smoke-check: the cron field accepted the value. We don't submit
-    // because the save button in this nested form competes with the
-    // automation-level Save in the same DOM, and dispatching it shifts
-    // navigation in non-deterministic ways across builds.
-    await expect(cronInput).toHaveValue("0 9 * * *");
+    // The cron builder shows frequency chips (Daily/Weekly/...) and a live
+    // preview of the generated cron. Picking "Daily" yields "M H * * *".
+    await dailyBtn.click();
+    // Smoke-check: the builder rendered a cron preview in parentheses.
+    await expect(page.getByText(/\(\d+ \d+ \* \* \*\)/).first()).toBeVisible();
   });
 
   test("create a webhook and reveal its URL with a copy button", async ({
@@ -311,15 +310,17 @@ test.describe("automations", () => {
     await page.getByRole("button", { name: /save|create/i }).first().click();
     await page.getByText(name).first().click();
 
-    // Add a schedule (inline section, scroll into view).
+    // Add a schedule (inline section, scroll into view). The visual cron
+    // builder seeds a default daily cron on mount, so we just pick a
+    // frequency and save.
     const addSchedBtn = page
       .getByRole("button", { name: /add schedule|new schedule|\+ schedule/i })
       .first();
     await addSchedBtn.scrollIntoViewIfNeeded();
     await addSchedBtn.click();
-    await page.getByLabel(/cron|expression/i).first().fill("0 9 * * *");
+    await page.getByRole("button", { name: /^daily$/i }).first().click();
     await page
-      .getByRole("button", { name: /save|create|add/i })
+      .getByRole("button", { name: /^save$|^create$|^add$/i })
       .first()
       .click();
 
